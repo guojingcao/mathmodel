@@ -92,7 +92,7 @@ def run_patho(n_rep=200, seed=99):
             cli = MockClient(env); robot = robotmod.Problem3Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
                 got = robot.run()
-            crs.append(got/env.n_src); Ts.append(cli.dist/5 + cli.n_measure*5)
+            crs.append(got/env.n_src); Ts.append(sim_time(cli))
             if got < env.n_src:
                 miss += 1
         Ts = np.array(Ts)
