@@ -314,6 +314,7 @@ class Problem4Robot:
         self.near_pos = {ch: None for ch in range(1, N_CH+1)}
         self.ns_at = {ch: set() for ch in range(1, N_CH+1)}   # no_signal 的点索引
         self.cleared_count = 0
+        self.onway_failed = set()   # 顺路清除失败过的频道: 不再顺路重试, 留给扫描后批量清除
         self.pts = tri_mesh(a=MESH_A, margin=MESH_MARGIN)
         self.tris = build_triangles(self.pts, a=MESH_A)
         self.cover_tris = covering_triangles(self.tris, self.pts)
@@ -499,7 +500,7 @@ class Problem4Robot:
             if ON_WAY_DELTA is not None and i + 1 < len(path):
                 nxt = path[i+1]
                 for c2 in range(1, N_CH+1):
-                    if self.state[c2] != "found":
+                    if self.state[c2] != "found" or c2 in self.onway_failed:
                         continue
                     Q = self.near_pos[c2] if self.near_pos[c2] else self._locate_quick(c2)
                     if Q is None:
@@ -514,7 +515,11 @@ class Problem4Robot:
                             self.state[c2] = "cleared"; self.cleared_count += 1
                             self.log(f"顺路清除: 频道 {c2} [{self.cleared_count}]")
                         else:
+                            # 顺路失败: 记入冷却, 不再在后续网格点反复顺路重试
+                            self.onway_failed.add(c2)
                             self._homing_clear(c2, Q[0], Q[1])
+                            if self.state[c2] == "cleared":
+                                self.onway_failed.discard(c2)
 
         self.log(f"扫描完成: 已发现 {sum(1 for s in self.state.values() if s=='found')}, "
                  f"已排除 {sum(1 for s in self.state.values() if s=='excluded')}")
