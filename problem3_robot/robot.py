@@ -411,6 +411,10 @@ class Problem3Robot:
     # ===== 外部改进模块开关(默认关, 用于消融实验) =====
     ORDER_BY_PROB = False    # 模块A: 贝叶斯概率图给覆盖点排访问顺序(替代固定六边形顺序)
     DOP_PRESCREEN = False    # 模块B: DOP(交会角)预筛候选补测点, 再按极小极大+路程择优
+    # 模块E(诊断用配对实验开关): 最小二乘试探清除的信任门限(Ω 半径, 米)。
+    #   None = 当前策略: Ω 半径超限或可行域退化时, 直接用 LS 交会点盲清除;
+    #   数值 = 仅当 Ω 半径 <= 该值才允许盲清除, 否则改走补测/归航(用于配对实验)。
+    LS_CLEAR_GATE = None
 
     def __init__(self, client):
         self.c = client
@@ -756,13 +760,20 @@ class Problem3Robot:
                     rec["method"] = "ls"
                     pt = bearing_intersection([dirs[best_i][0], dirs[best_j][0]],
                                               [dirs[best_i][1], dirs[best_j][1]])
+                    # 模块E(仅实验): 门限生效时, Ω 半径超限/未知的 LS 点不直接用于盲清除
+                    gate = getattr(Problem3Robot, "LS_CLEAR_GATE", None)
+                    if gate is not None and (rec["omega_radius_m"] is None
+                                             or rec["omega_radius_m"] > gate):
+                        rec["gate_blocked"] = True
+                        pt = None
         if pt is not None:
             rec["point"] = [round(pt[0], 1), round(pt[1], 1)]
         self._note_locate(rec)
         if tag:
             self.log(f"定位[{tag}] 频道 {ch}: 方式={rec['method']} "
                      f"Ω半径={rec['omega_radius_m']}m 交会角={rec['cross_angle_deg']}° "
-                     f"示向数={rec['n_dirs']}")
+                     f"示向数={rec['n_dirs']}"
+                     + ("  [门限拦截->改走补测]" if rec.get("gate_blocked") else ""))
         return pt
 
     # ---- 垂直补测点(取靠近 toward 的一侧) ----

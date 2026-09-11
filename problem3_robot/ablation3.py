@@ -38,24 +38,66 @@ class MockClient:
     def exit(self): pass
 
 
-def run_cfg(order_prob, dop, on_way, n=300, seed=2026):
+def run_cfg(order_prob, dop, on_way, n=300, seed=2026, ls_gate=None, paired=False):
     rb.Problem3Robot.ORDER_BY_PROB = order_prob
     rb.Problem3Robot.DOP_PRESCREEN = dop
     rb.Problem3Robot.ON_WAY_DELTA = on_way
+    rb.Problem3Robot.LS_CLEAR_GATE = ls_gate
     rng = np.random.default_rng(seed)
-    crs = []; Ls = []; ms = []; fs = []; Ts = []
+    crs = []; Ls = []; ms = []; fs = []; Ts = []; per_case = []
     for _ in range(n):
-        env = exp.Env(rng, directional=False)
+        env = exp.Env(rng, directional=False)      # 同一 seed -> 各配置面对完全相同的案例(配对)
         cli = MockClient(env); robot = rb.Problem3Robot(cli)
         with contextlib.redirect_stdout(io.StringIO()):
             k = robot.run()
+        T = cli.dist/5 + cli.n_measure*5
         crs.append(k/env.n_src); Ls.append(cli.dist); ms.append(cli.n_measure); fs.append(cli.fail)
-        Ts.append(cli.dist/5 + cli.n_measure*5)
-    return dict(cr=np.mean(crs), L=np.mean(Ls), n=float(np.mean(ms)), f=float(np.mean(fs)),
-                T=float(np.mean(Ts)), T90=float(np.percentile(Ts, 90)))
+        Ts.append(T)
+        if paired:
+            per_case.append((k/env.n_src, cli.dist, cli.n_measure, cli.fail, T))
+    out = dict(cr=np.mean(crs), L=np.mean(Ls), n=float(np.mean(ms)), f=float(np.mean(fs)),
+               T=float(np.mean(Ts)), T90=float(np.percentile(Ts, 90)))
+    if paired:
+        out["per_case"] = np.array(per_case)
+    return out
+
+
+def paired_ls_gate(n=300, seed=2026):
+    """第5项配对实验: 是否收紧最小二乘试探清除的信任门限。
+
+    同一批随机案例下对比"当前策略(LS 点直接盲清除)"与"Ω 半径门限"各档,
+    配对差值 = 门限档 − 当前档(<0 表示门限更省)。
+    """
+    arms = [("当前(LS 直接盲清除)", None), ("门限 Ω<=40m", 40.0), ("门限 Ω<=30m", 30.0),
+            ("门限 Ω<=25m", 25.0), ("门限 Ω<=20m(=仅MEC)", 20.0)]
+    res = {}
+    for name, gate in arms:
+        t0 = time.time()
+        res[name] = run_cfg(False, False, 300.0, n, seed, ls_gate=gate, paired=True)
+        print(f"  已跑 {name}  [{time.time()-t0:.0f}s]", flush=True)
+    base = res[arms[0][0]]["per_case"]
+    hdr = "%-22s%9s%9s%9s%10s%12s%12s%10s" % (
+        "方案", "清除率", "移动(m)", "检测", "失败ms", "Δ时间(s)", "Δ移动(m)", "Δ失败")
+    print("\n[配对实验] 最小二乘试探清除门限  n=%d 案例(全清为硬约束)" % n)
+    print(hdr); print("-" * len(hdr))
+    for name, _ in arms:
+        r = res[name]
+        if name == arms[0][0]:
+            print("%-22s%8.2f%%%9.0f%9.0f%10.2f%12s%12s%10s" % (
+                name, r['cr']*100, r['L'], r['n'], r['f'], "—", "—", "—"))
+            continue
+        d = np.array(r["per_case"]) - base
+        print("%-22s%8.2f%%%9.0f%9.0f%10.2f%12.1f%12.1f%10.2f" % (
+            name, r['cr']*100, r['L'], r['n'], r['f'], d[:, 4].mean(), d[:, 1].mean(),
+            d[:, 3].mean()))
+    return res
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--ls-gate":
+        N = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+        paired_ls_gate(N)
+        sys.exit(0)
     N = int(sys.argv[1]) if len(sys.argv) > 1 else 300
     cfgs = [
         ("基准(全关)",              False, False, None),
