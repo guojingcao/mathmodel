@@ -51,6 +51,7 @@ python Problem2_Observation_Optimization/main.py --repetitions 2 --evaluation-re
 - `paper/problem2_tables.tex`：由正式结果整理的五张三线表。
 - `paper/compile_check.tex`：正文与三线表的独立编译检查入口。
 - `results/problem1_problem2_consistency.md`：问题一、问题二模型和数据口径衔接检查。
+- `results/paper_validation.md`：正文数值、LaTeX编译和模型衔接的最终校验记录。
 - 图件位于 `../origin_figures/Problem2_Observation_Optimization/`，每图PDF、SVG及600dpi PNG。
 
 问题一面积是网格内外包中点；直径是内包近似并带外包上界；覆盖半径使用安全外包最小圆。完整定义见问题一 `MODEL.md`。本工程的2000 m相邻移动上限是可配置实验条件，不替代官方速度、时间或障碍物规则。

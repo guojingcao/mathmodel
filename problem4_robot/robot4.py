@@ -46,6 +46,7 @@ class SimClient:
         self.actions = []
         self.virtual_time = 0.0
         self.meta = {}          # 机器人回填: 配置/网格/逐频道结果, 写入 JSON 汇总
+        self.error = None       # 异常说明(如接口未开放), 写入 JSON 汇总
 
     def _new_req_id(self, tag):
         self._seq += 1
@@ -106,7 +107,7 @@ class SimClient:
                 moves += math.hypot(pos["x"]-prev[0], pos["y"]-prev[1])
                 prev = (pos["x"], pos["y"])
         clears = [a for a in self.actions if a["path"] == "/clear"]
-        return {
+        s = {
             "problem": 4,
             "team_no": self.robot_id,
             "base_url": self.base_url,
@@ -123,14 +124,38 @@ class SimClient:
             "movement_distance_m": round(moves, 1),
             "robot": self.meta,
         }
+        if self.error:
+            s["error"] = self.error
+        return s
 
     def _base(self, rid):
         return {"arena_id": self.arena_id, "robot_id": self.robot_id, "request_id": rid}
 
-    def enter(self):
-        r = self.post("/enter", self._base(self._new_req_id("enter")))
+    def enter(self, wait_s=90):
+        """进入目标区域。接口未开放时连接会被直接拒绝, 故自动等待重试。"""
+        rid = self._new_req_id("enter")
+        payload = self._base(rid)
+        t0 = time.time()
+        r = None
+        while True:
+            try:
+                r = self.post("/enter", payload, timeout=5)
+                break
+            except RuntimeError:
+                if time.time() - t0 > wait_s:
+                    raise RuntimeError(
+                        "无法连接模拟器接口(连接被拒绝)。请确认:\n"
+                        "  1) 模拟器已启动并已在线登录;\n"
+                        "  2) 已在模拟器中点击开始\"问题4测试\";\n"
+                        "  3) 5 秒倒计时已结束、界面提示机器狗接口已就绪;\n"
+                        "  4) --robot-id 与当前登录的参赛队号一致;\n"
+                        "  5) 端口与模拟器设置一致(默认 2026)。")
+                if int(time.time() - t0) // 15 > int((time.time() - t0 - 0.1) // 15):
+                    print(f"  [等待] 模拟器接口未就绪({int(time.time()-t0)}s), 正在重试 ...",
+                          flush=True)
+                time.sleep(3)
         if r.get("accepted") is not True:
-            raise RuntimeError(f"/enter 失败: {r}")
+            raise RuntimeError(f"/enter 被拒绝: {r}")
         self.remaining_real = r.get("remaining_real_duration_s", 1200)
         return r
 
@@ -789,17 +814,25 @@ def main(argv=None):
         log_dir, "p4_log_%s.jsonl" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
     client = SimClient(args.base_url, args.robot_id, args.arena_id)
     robot = Problem4Robot(client)
+    exit_code = 0
     try:
         cleared = robot.run()
         s = client.build_summary()
         print(f"\n[汇总] 清除干扰源 {cleared} 个, 虚拟时刻 {s['final_virtual_time_s']:.1f}s, "
               f"移动 {s['movement_distance_m']:.0f}m, 检测 {s['measure_count']} 次, "
               f"清除 {s['clear_attempt_count']} 次(成功 {s['clear_success_count']})")
+    except Exception as e:
+        exit_code = 3
+        print(f"\n[错误] {e}", file=sys.stderr)
+        print("[提示] 测试未开始或已结束, 本次未产生有效数据。", file=sys.stderr)
     finally:
         # 单个 JSONL 文件: 逐条动作 + 末行 __summary__ 结构化汇总(不再另写第二份)
+        if exit_code != 0 and not client.actions:
+            client.error = "未连接上模拟器接口(测试未开始或已结束), 本局无有效数据"
         p = client.dump_log(log_file)
         print(f"[日志] 已写入 {p}")
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
