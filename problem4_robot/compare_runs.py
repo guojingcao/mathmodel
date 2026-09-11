@@ -180,27 +180,48 @@ def main():
     groups = {}
     for r in valid:
         groups.setdefault(r["delta"], []).append(r)
-    if len(groups) > 1:
-        print("=" * 78)
-        print("分组对照(同 δ 多局均值; 非严格配对, 仅工程风险复核)")
-        print("%-8s%5s%11s%11s%12s%12s%11s%10s" % (
-            "δ", "局数", "虚拟时刻", "移动(m)", "清除阶段(s)", "每源(s)",
-            "失败清除", "归航ep"))
+    if groups:
+        print("=" * 96)
+        print("分组对照(同 δ 多局均值; 非严格配对, 仅工程风险复核; 判定规则: 漏清/未解决/证书异常一律否决)")
+        print("%-7s%5s%6s%6s%10s%12s%10s%10s%11s%12s%9s%12s%7s%8s" % (
+            "δ", "局数", "全清局", "漏清局", "虚拟时刻", "mesh_scan(s)", "顺路(s)",
+            "顺路移动(m)", "扫描后(s)", "扫描后移动(m)", "每源(s)",
+            "顺路ok/fail", "归航ep", "失败清除"))
         for d in sorted(groups):
             g = groups[d]
+
             def avg(k):
                 v = [x[k] for x in g if x.get(k) is not None]
                 return sum(v)/len(v) if v else None
-            print("%-8s%5d%11s%11s%12s%12s%11s%10s" % (
-                d, len(g),
+            full = sum(1 for x in g if not x["unresolved"] and not x["error"]
+                       and x["cleared_count"] and x["clear_ok"] == x["cleared_count"])
+            bad = sum(1 for x in g if x["unresolved"] or x["error"])
+            # 分阶段数据只对"修复后"日志存在; 旧格式日志不计入时间列, 避免把 0 混进均值
+            gp = [x for x in g if x["scan"]]
+            if not gp:
+                gp = g
+            scan_t = sum((x["scan"] or {}).get("virtual_time_s", 0.0) for x in gp)/len(gp)
+            ow_t = sum((x["on_way"] or {}).get("virtual_time_s", 0.0) for x in gp)/len(gp)
+            ow_m = sum((x["on_way"] or {}).get("movement_distance_m", 0.0) for x in gp)/len(gp)
+            after_t = sum((x["after"] or {}).get("virtual_time_s", 0.0) for x in gp)/len(gp)
+            after_m = sum((x["after"] or {}).get("movement_distance_m", 0.0) for x in gp)/len(gp)
+            ow_ok = [x["onway_ok"] for x in g if x["onway_ok"] is not None]
+            ow_f = [x["onway_fail"] for x in g if x["onway_fail"] is not None]
+            print("%-7s%5d%6d%6d%10s%12s%10s%10s%11s%12s%9s%12s%7s%8s" % (
+                d, len(g), full, bad,
                 f"{avg('vt'):.0f}" if avg('vt') is not None else "—",
-                f"{avg('moves'):.0f}" if avg('moves') is not None else "—",
-                f"{avg('clear_phase_t'):.0f}" if avg('clear_phase_t') is not None else "—",
+                f"{scan_t:.0f}", f"{ow_t:.0f}", f"{ow_m:.0f}",
+                f"{after_t:.0f}", f"{after_m:.0f}",
                 f"{avg('per_src_t'):.0f}" if avg('per_src_t') is not None else "—",
-                f"{avg('clear_fail'):.1f}" if avg('clear_fail') is not None else "—",
-                f"{avg('episodes'):.1f}" if avg('episodes') is not None else "—"))
+                f"{sum(ow_ok)/len(ow_ok):.1f}/{sum(ow_f)/len(ow_f):.1f}" if ow_ok else "—",
+                f"{avg('episodes'):.1f}" if avg('episodes') is not None else "—",
+                f"{avg('clear_fail'):.1f}" if avg('clear_fail') is not None else "—"))
         print("\n判定规则: 只有较大 δ 在全清、零未解决、证书索引为真、且两局均未增加"
               "归航风险并稳定降低扫描后时间时, 才考虑改默认值; 否则保持 δ=300。")
+        legacy = [r["file"] for r in valid if not r.get("scan")]
+        if legacy:
+            print(f"注: {len(legacy)} 局为旧格式日志(无分阶段/证书字段), 未计入分阶段时间列: "
+                  + ", ".join(legacy))
 
 
 if __name__ == "__main__":
