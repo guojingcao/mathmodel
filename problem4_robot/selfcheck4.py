@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """问题4 自检: (a) 验证三角网格覆盖圆盘 + 证书距离条件; (b) 定向/混合源端到端清除率。"""
-import importlib.util, sys, math, numpy as np, io, contextlib
+import importlib.util, sys, math, numpy as np, io, contextlib, os
+
+# 统一计时口径: 必须用 simlib.sim_time()(实机标定 成功清除 4 s), 不要再写内联公式
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from simlib import sim_time                     # noqa: E402
 
 spec = importlib.util.spec_from_file_location("r4", r"D:\My_MathModeling_Project\problem4_robot\robot4.py")
 r4 = importlib.util.module_from_spec(spec); sys.modules["r4"] = r4
@@ -178,37 +182,50 @@ def make_env(rng, specs):
     return env
 
 
-def run_patho(n_rep=200, seed=99):
-    """极端场景压力测试: 每类场景重复 n_rep 次, 报告漏清与时间分布 + 漏清率置信上界。"""
-    scen = [("随机·全定向", "random_dir", 13), ("随机·50%定向", "random_50", 13),
-            ("随机·全向", "random_omni", 13), ("上界16源·定向50%", "random_50", 16),
-            ("下界10源·定向50%", "random_50", 10),
-            ("最坏接收(全1000m)+定向50%", "worst_rx", 13),
-            ("边界外指(全) ", "edge_out", 13), ("边界切向(全)", "edge_tangent", 13),
-            ("近中心背向(全)", "center_away", 13), ("近简并双源(全)", "degenerate", 13)]
-    print(f"极端场景压力测试: 每类 {n_rep} 次")
-    print("%-26s%9s%8s%9s%9s%11s%13s" % ("场景", "全清率", "漏清例", "平均(s)", "P95(s)",
-                                         "最大(s)", "漏清率95%上界"))
+PATHO_SCEN = [("随机·全定向", "random_dir", 13), ("随机·50%定向", "random_50", 13),
+              ("随机·全向", "random_omni", 13), ("上界16源·定向50%", "random_50", 16),
+              ("下界10源·定向50%", "random_50", 10),
+              ("最坏接收(全1000m)+定向50%", "worst_rx", 13),
+              ("边界外指(全) ", "edge_out", 13), ("边界切向(全)", "edge_tangent", 13),
+              ("近中心背向(全)", "center_away", 13), ("近简并双源(全)", "degenerate", 13)]
+
+
+def patho_stream(seed=99, n_rep=200):
+    """按 run_patho 完全相同的 rng 顺序产出 (label, kind, n, specs, rng, rep)。
+
+    重要: 消费方**必须**对每一例都调用 make_env(rng, specs)（即使不跑机器人），
+    因为 make_env 会从同一个 rng 取数；否则后续场景的随机流与 run_patho 不一致。
+    """
     rng = np.random.default_rng(seed)
-    bad = 0
-    for label, kind, n in scen:
+    for label, kind, n in PATHO_SCEN:
         k = kind if kind != "random_50" else "random_dir"
-        crs = []; Ts = []; miss = 0
-        for _ in range(n_rep):
+        for rep in range(n_rep):
             specs = patho_sources(rng, k, n)
             if kind == "random_50":
                 for s in specs:
                     if rng.uniform() >= 0.5:
                         s["pointing"] = None
-            env = make_env(rng, specs)
-            cli = MockClient(env); rb = r4.Problem4Robot(cli)
-            with contextlib.redirect_stdout(io.StringIO()):
-                got = rb.run()
-            T = cli.dist/5 + cli.n_measure*5 + cli.n_switch*1 + cli.n_clear_ok*5 + cli.fail*3
-            crs.append(got/env.n_src); Ts.append(T)
-            if got < env.n_src:
-                miss += 1
-        Ts = np.array(Ts)
+            yield label, kind, n, specs, rng, rep
+
+
+def run_patho(n_rep=200, seed=99):
+    """极端场景压力测试: 每类场景重复 n_rep 次, 报告漏清与时间分布 + 漏清率置信上界。"""
+    print(f"极端场景压力测试: 每类 {n_rep} 次")
+    print("%-26s%9s%8s%9s%9s%11s%13s" % ("场景", "全清率", "漏清例", "平均(s)", "P95(s)",
+                                         "最大(s)", "漏清率95%上界"))
+    bad = 0
+    groups = {}
+    for label, kind, n, specs, rng, rep in patho_stream(seed, n_rep):
+        env = make_env(rng, specs)
+        cli = MockClient(env); rb = r4.Problem4Robot(cli)
+        with contextlib.redirect_stdout(io.StringIO()):
+            got = rb.run()
+        T = cli.dist/5 + cli.n_measure*5 + cli.n_switch*1 + cli.n_clear_ok*5 + cli.fail*3
+        groups.setdefault(label, []).append((got/env.n_src, T, 1 if got < env.n_src else 0))
+    for label, kind, n in PATHO_SCEN:
+        g = groups[label]
+        crs = np.array([x[0] for x in g]); Ts = np.array([x[1] for x in g])
+        miss = int(sum(x[2] for x in g))
         ub = 1 - 0.05**(1.0/n_rep) if miss == 0 else None
         bad += miss
         print("%-26s%8.1f%%%8d%9.0f%9.0f%11.0f%13s" % (

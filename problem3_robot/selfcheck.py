@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """robot.py 离线自检: 验证清除率 + 移动距离(衡量事件驱动调度收益)。"""
-import importlib.util, sys, numpy as np, io, contextlib
+import importlib.util, sys, numpy as np, io, contextlib, os
+
+# 统一计时口径: 必须用 simlib.sim_time()(实机标定 成功清除 4 s), 不要再写内联公式
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from simlib import sim_time                     # noqa: E402
 
 spec = importlib.util.spec_from_file_location("robotmod", r"D:\My_MathModeling_Project\problem3_robot\robot.py")
 robotmod = importlib.util.module_from_spec(spec); sys.modules["robotmod"] = robotmod
@@ -127,8 +131,7 @@ if __name__ == "__main__":
         ratios.append(n / env.n_src)
         dists.append(cli.dist)
         measures.append(cli.n_measure)
-        TS.append(cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
-                  + cli.n_clear_ok*5 + cli.fail*3)
+        TS.append(sim_time(cli))
         if args.diag:
             loc_hist.extend(getattr(cli, "locate_history", []))
             clr_diag.extend(getattr(cli, "clear_diag", []))

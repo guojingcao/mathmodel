@@ -523,6 +523,15 @@ class Problem4Robot:
     # 补测距离上限(米): None = 无上限(既有流程); 数值 = 最近补测点超过该距离就跳过补测,
     # 直接走已有的"沿首示向二分归航"(只加调度阈值, 不改覆盖/定位模型)。
     SUPP_MAX_DIST = None
+    # 网格补齐点(正确性修复, 见 cover_audit.py / mesh_complete.py):
+    # 原 27 点网格的三角剖分在圆盘内侧留有**薄空洞**(实测约 0.09% 面积, 集中在 R 内侧
+    # 1780-1800 m 环)。落在此空洞内且朝外辐射的源: (a) 所有网格顶点都在其 ±90° 扇区之外,
+    # 故任何顶点都测不到; (b) 它不属于任何三角形, 于是"所有 cover_tris 被证伪"推不出它不存在,
+    # 却被判为 excluded; 而 excluded 是终态(recovery 不处理 excluded) => 必然漏清
+    # (实测: 全定向·边界外指类 200 例中 1 例)。
+    # 补这 2 个点后剖分覆盖整个圆盘(120000 采样点 0 未覆盖), 证书推理恢复完备,
+    # 这类源也能被正常发现并清除。置空列表即退回原 27 点网格。
+    MESH_EXTRA_PTS = [(-1174.6, -1363.8), (1773.2, -308.8)]
 
     def __init__(self, client):
         self.c = client
@@ -538,7 +547,8 @@ class Problem4Robot:
         self.onway_failed = set()   # 顺路清除失败过的频道: 不再顺路重试, 留给扫描后批量清除
         self.locate_diag = {}       # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
         self.supp_skipped = set()   # 因补测距离上限被跳过、改走二分归航的频道
-        self.pts = tri_mesh(a=MESH_A, margin=MESH_MARGIN)
+        self.pts = tri_mesh(a=MESH_A, margin=MESH_MARGIN) + [
+            tuple(p) for p in getattr(Problem4Robot, "MESH_EXTRA_PTS", []) or []]
         self.tris = build_triangles(self.pts, a=MESH_A)
         self.cover_tris = covering_triangles(self.tris, self.pts)
 
