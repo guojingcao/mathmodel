@@ -160,6 +160,7 @@ class SimClient:
             "team_no": self.robot_id,
             "base_url": self.base_url,
             "config": {"mesh_a": MESH_A, "mesh_margin": MESH_MARGIN,
+                       "mesh_theta": MESH_THETA, "mesh_offset": list(MESH_OFFSET),
                        "on_way_delta": ON_WAY_DELTA, "r_clear": R_CLEAR,
                        "r_guarantee": R_GUARANTEE,
                        # 开关是类属性(不是模块常量), 必须经类名读取
@@ -1261,7 +1262,7 @@ class Problem4Robot:
 
 def main(argv=None):
     import argparse, os, datetime
-    global ON_WAY_DELTA          # 必须在函数内首次引用之前声明
+    global ON_WAY_DELTA, MESH_A, MESH_MARGIN, MESH_THETA, MESH_OFFSET  # 必须在首次引用前声明
     ap = argparse.ArgumentParser(description="问题4 全向+定向干扰源机器人")
     ap.add_argument("--robot-id", dest="robot_id", default=os.environ.get("ROBOT_ID"))
     ap.add_argument("--base-url", dest="base_url", default=DEFAULT_BASE_URL)
@@ -1282,6 +1283,9 @@ def main(argv=None):
                          f"也可用环境变量 ON_WAY_DELTA)")
     ap.add_argument("--tag", dest="tag", default=os.environ.get("LOG_TAG", ""),
                     help="日志文件名后缀标记(如 d300/d500, 便于 A/B 对照; 也可用 LOG_TAG)")
+    ap.add_argument("--mesh", dest="mesh", default=None,
+                    help="临时覆盖网格几何 'a,margin,theta,offx,offy'(如实机 A/B; "
+                         "旧网格为 '900,800,0,0,0'; 不传则用默认 920,700,20,460,398)")
     ap.add_argument("--mesh-stats", action="store_true", help="只打印网格统计后退出")
     args = ap.parse_args(argv)
 
@@ -1296,6 +1300,12 @@ def main(argv=None):
         rb.cover_tris = covering_triangles(rb.tris, rb.pts)
         print(f"网格点数={len(rb.pts)} 三角形数={len(rb.tris)} 需证伪={len(rb.cover_tris)}")
         return
+
+    if args.mesh:
+        v = [float(x) for x in args.mesh.split(",")]
+        MESH_A, MESH_MARGIN, MESH_THETA, MESH_OFFSET = v[0], v[1], v[2], (v[3], v[4])
+    print(f"[config] mesh a={MESH_A} margin={MESH_MARGIN} theta={MESH_THETA} "
+          f"offset={MESH_OFFSET}", flush=True)
 
     if not args.robot_id:
         print("错误: 未提供参赛队号。用法: python robot4.py --robot-id 你的队号", file=sys.stderr)
