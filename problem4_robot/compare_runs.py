@@ -76,6 +76,9 @@ def row(path):
     name = os.path.basename(path)
     if summ is None:
         return {"file": name, "bad": f"无摘要(动作 {len(acts)} 条), 本局无效"}
+    if summ.get("error") or not summ.get("final_virtual_time_s"):
+        return {"file": name,
+                "bad": f"无有效数据({summ.get('error') or '虚拟时刻为 0'}), 不计入统计"}
     cfg = summ.get("config", {})
     meta = summ.get("robot", {}) or {}
     hs = summ.get("homing_stats", {}) or {}
