@@ -1,0 +1,70 @@
+﻿�� 52 ����־�ļ�; ��Ч 52, ��Ч 0
+------------------------------------------------------------------------------------------------------------
+�ļ�                                             vt(s)     ���      ��ֵ       ����    �ƶ�(m)       ���      �˳�    δ��
+p3_log_20260911_171558.jsonl                    4605     15    None     None    18817      129       ?     0
+p3_log_20260911_172521.jsonl                    4355     13    None     None    17700      126       ?     0
+p3_log_20260911_181126.jsonl                    3550     11    None     None    13628      128       ?     0
+p3_log_20260911_181206.jsonl                    3701     10    None     None    14375      130       ?     0
+p3_log_20260911_181228.jsonl                    3363     10    None     None    12910      123       ?     0
+p3_log_20260911_181255.jsonl                    4160     13    None     None    16650      128       ?     0
+p3_log_20260911_181317.jsonl                    4709     15    None     None    19329      128       ?     0
+p3_log_20260911_181339.jsonl                    4628     16    None     None    19073      122       ?     0
+p3_log_20260911_184853.jsonl                    3873     12    None     None    15203      129       ?     0
+p3_log_20260911_194615.jsonl                    4365     13    None     None    17466      135       ?     0
+p3_log_20260911_194630.jsonl                    4862     10    None     None    19612      152       ?     0
+p3_log_20260911_194656.jsonl                    3849     12    None     None    15049      130       ?     0
+p3_log_20260911_194715.jsonl                    4288     13    None     None    17472      122       ?     0
+p3_log_20260911_201821.jsonl                    4394     15    None     None    17762      129       ?     0
+p3_log_20260911_201856.jsonl                    4860     13    None     None    19752      142       ?     0
+p3_log_20260911_201918.jsonl                    4827     16    None     None    19776      132       ?     0
+p3_log_20260911_201939.jsonl                    5267     16    None     None    21709      143       ?     0
+p3_log_20260911_201959.jsonl                    5417     13    None     None    22744      135       ?     0
+p3_log_20260911_202020.jsonl                    5348     15    None     None    22248      138       ?     0
+p3_log_20260911_204455_s1_base.jsonl            4864     11    None     None    19817      143       ?     0
+p3_log_20260911_204512_s2_oppR.jsonl            5203     11    None     None    21228      154       ?     0
+p3_log_20260911_204530_s3_oppR.jsonl            3622     14    None     None    13854      130       ?     0
+p3_log_20260911_204547_s4_base.jsonl            4741     16    None     None    19655      123       ?     0
+p3_log_20260911_205132_r1_off.jsonl             3332     11    None     None    12724      123       ?     0
+p3_log_20260911_205134_r2_on.jsonl              4508     13    None     None    18008      141       ?     0
+p3_log_20260911_205154_r3_on.jsonl              4621     16    None     None    18945      126       ?     0
+p3_log_20260911_205211_r4_off.jsonl             4250     14    None     None    17007      131       ?     0
+p3_log_20260911_205228_r5_off.jsonl             4845     14    None     None    19936      134       ?     0
+p3_log_20260911_205245_r6_on.jsonl              4240     16    None     None    16996      127       ?     0
+p3_log_20260911_205305_r7_on.jsonl              3863     12    None     None    15166      129       ?     0
+p3_log_20260911_205322_r8_off.jsonl             4809     15    None     None    19811      130       ?     0
+p3_log_20260911_213258.jsonl                    4058     12    None     None    15974      135completed     0
+p3_log_20260911_213334.jsonl                    5094     16    None     None    21025      136completed     0
+p3_log_20260911_213400.jsonl                    3906     12    None     None    15394      128completed     0
+p3_log_20260911_213412.jsonl                    5238     15    None     None    21623      141completed     0
+p3_log_20260911_213424.jsonl                    4150     15    None     None    16526      128completed     0
+p3_log_20260911_213441.jsonl                    4080     10    None     None    16177      133completed     0
+p3_log_20260911_213458.jsonl                    5145     14    None     None    21027      147completed     0
+robot4_log_20260911_164755.jsonl               11076   None    None     None        ��      578       ?     0
+robot4_log_20260911_165356.jsonl                   0   None    None     None        0        0       ?     0
+robot4_log_20260911_165612.jsonl                9814     16    None     None    35413      447       ?     0
+robot_log_20260911_122031.jsonl                 5409   None    None     None        ��      143       ?     0
+robot_log_20260911_123151.jsonl                 5053   None    None     None        ��      146       ?     0
+robot_log_20260911_125634.jsonl                 5788   None    None     None        ��      145       ?     0
+robot_log_20260911_131659.jsonl                 4341   None    None     None        ��      142       ?     0
+robot_log_20260911_162422.jsonl                 4486   None    None     None        ��      133       ?     0
+robot_log_20260911_162840.jsonl                 3934   None    None     None        ��      132       ?     0
+robot_log_20260911_162918.jsonl                 4396   None    None     None        ��      139       ?     0
+robot_log_20260911_163947.jsonl                 3914   None    None     None        ��      134       ?     0
+robot_log_20260911_164032.jsonl                 4281   None    None     None        ��      127       ?     0
+robot_log_20260911_164105.jsonl                 4969   None    None     None        ��      134       ?     0
+robot_log_20260911_164129.jsonl                 4671   None    None     None        ��      144       ?     0
+============================================================================================================
+��־��ֲ�: p3=38, robot=11, robot4=3
+  ע: ֻ�� p3_log_* ����������ǰ��ʽ; robot_log_* Ϊ���ڸ�ʽ(�� cleared/�ƶ��ֶ�), robot4_log_* Ϊ��������־(����ڱ�Ŀ¼), ���������·�ͳ�ơ�
+------------------------------------------------------------------------------------------------------------
+[ͳ�ƿھ�] ��=p3_log_*, n=38
+����ʱ��: n=38 ��ֵ 4447.1s ��λ 4451s ��׼�� 564.1s CV 12.68% ��Χ [3332, 5417]
+��δ��Ƶ���ľ�: ��(0 ��)
+cleared_count>0 �ľ�: 38/38; ���� [10, 16]
+exit_status=completed �ľ�: 7/38 (����Ϊ������־, �޸��ֶ�)
+ÿԴʱ��(�Ȱ���������ƽ��): 337.1 s/Դ (n=38)
+ÿԴʱ��(�ܺ�֮�� ��T/��N): 332.7 s/Դ (��T=168992s, ��N=508)
+�ƶ�����: ��ֵ 17952 m, ��Χ [12724, 22744] m
+ʱ��-Դ�����Իع�(n=38): T = 2544 + 142.3*N, R^2 = 0.246
+  ע: Դ�����ܵ���������ʱ��(����/������������), ���İ�Դ��һʹ�á�
+ע: ���ű�ֻ���鵵�˶�, ���޸��κ�����; �쳣��һ����ʽ�г���
