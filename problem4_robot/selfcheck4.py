@@ -1,0 +1,348 @@
+# -*- coding: utf-8 -*-
+"""问题4 自检: (a) 验证三角网格覆盖圆盘 + 证书距离条件; (b) 定向/混合源端到端清除率。"""
+import importlib.util, sys, math, numpy as np, io, contextlib
+
+spec = importlib.util.spec_from_file_location("r4", r"D:\My_MathModeling_Project\problem4_robot\robot4.py")
+r4 = importlib.util.module_from_spec(spec); sys.modules["r4"] = r4
+spec.loader.exec_module(r4)
+spec2 = importlib.util.spec_from_file_location("exp", r"D:\My_MathModeling_Project\2026B_solution\verify\experiment.py")
+exp = importlib.util.module_from_spec(spec2); sys.modules["exp"] = exp
+spec2.loader.exec_module(exp)
+
+
+def in_tri(p, a, b, c):
+    def sgn(x, y, z):
+        return (x[0]-z[0])*(y[1]-z[1]) - (y[0]-z[0])*(x[1]-z[1])
+    d1, d2, d3 = sgn(p, a, b), sgn(p, b, c), sgn(p, c, a)
+    neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+    pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+    return not (neg and pos)
+
+
+def verify_mesh():
+    pts = r4.tri_mesh(margin=r4.MESH_MARGIN); tris = r4.build_triangles(pts)
+    print(f"网格: {len(pts)} 点, {len(tris)} 三角形")
+    # 最大边长
+    mx = 0.0
+    for t in tris:
+        for i in range(3):
+            for j in range(i+1, 3):
+                mx = max(mx, math.hypot(pts[t[i]][0]-pts[t[j]][0], pts[t[i]][1]-pts[t[j]][1]))
+    print(f"最大边长 = {mx:.1f} m (需 <= 1000)")
+    # 覆盖性: 圆盘内随机采样, 检查是否落在某三角形内
+    rng = np.random.default_rng(7); miss = 0; N = 20000
+    for _ in range(N):
+        r = r4.R_AREA*math.sqrt(rng.uniform()); a = rng.uniform(0, 2*math.pi)
+        p = (r*math.cos(a), r*math.sin(a))
+        ok = False
+        for t in tris:
+            if in_tri(p, pts[t[0]], pts[t[1]], pts[t[2]]):
+                ok = True; break
+        if not ok:
+            miss += 1
+    print(f"覆盖性: 圆盘内 {N} 个采样点, 未被三角形覆盖 {miss} 个 ({miss/N*100:.3f}%)")
+    # 认证条件: 三角形内任一点到顶点距离 <= 最大边长(由凸性保证) => 打印最坏
+    print(f"=> 任一点到三角形顶点距离 <= 最大边长 = {mx:.1f}m <= 1000m: {'满足' if mx<=1000.5 else '不满足'}")
+    return len(pts), len(tris)
+
+
+def verify_path_index():
+    """第一优先级验证: 访问序列必须携带真实网格编号, 每点恰好一次, 锚点不重复计入。"""
+    rb = r4.Problem4Robot(None)
+    seq = rb._order_points()
+    ids = [mi for mi, _, _ in seq]
+    perm_ok = sorted(ids) == list(range(len(rb.pts)))
+    coord_bad = [(mi, x, y) for mi, x, y in seq
+                 if (round(x, 6), round(y, 6)) != rb.pts[mi]]
+    dup = [i for i in set(ids) if ids.count(i) > 1]
+    print(f"路径索引: {len(seq)} 项 / 网格 {len(rb.pts)} 点; 恰访问一次 = {perm_ok}; "
+          f"坐标与编号不符 = {len(coord_bad)}; 重复编号 = {dup or '无'}")
+    print(f"  第0项: 网格编号 {seq[0][0]} 坐标 ({seq[0][1]:.1f},{seq[0][2]:.1f})"
+          f"  => 锚点与网格点合一, 原点不重复扫描")
+    return perm_ok and not coord_bad and not dup
+
+
+def verify_certificate(n_cases=60, p_dir=0.5, seed=4026):
+    """第一优先级验证: 证书不得把"真实存在且可收到"的频道判为不存在。"""
+    rng = np.random.default_rng(seed)
+    miss = 0; wrong = 0
+    for case in range(n_cases):
+        env = exp.Env(rng, directional=True, p_dir=p_dir)
+        cli = MockClient(env); robot = r4.Problem4Robot(cli)
+        with contextlib.redirect_stdout(io.StringIO()):
+            n = robot.run()
+        if n < env.n_src:
+            miss += 1
+            print(f"  漏清: 第{case+1}例 清除 {n}/{env.n_src}")
+        real = {int(s["ch"]) for s in env.sources}
+        for ch in range(1, r4.N_CH+1):
+            if robot.state[ch] == "excluded" and ch in real:
+                wrong += 1
+                print(f"  证书反例: 第{case+1}例 频道{ch} 真实存在却被排除")
+    print(f"证书复核 {n_cases} 例(seed {seed}, 定向比例{p_dir*100:.0f}%): "
+          f"漏清 {miss} 例, 误排除 {wrong} 次")
+    return miss == 0 and wrong == 0
+
+
+def verify_summary_schema():
+    """回归: 真实客户端 build_summary 必须能构造成功(离线 MockClient 不走这条路径)。
+
+    历史故障: 摘要里直接引用类属性 USE_NEG_INFO 等模块级不存在的名字 -> 实机写日志时 NameError。
+    """
+    c = r4.SimClient("http://127.0.0.1:2026", "TEST-000")
+    c.phase = "mesh_scan"
+    c._record("/measure", {"position": {"x": 100.0, "y": 0.0}, "channel": 1},
+              {"accepted": True, "virtual_time_s": 10.0, "measure_result": "no_signal"})
+    c.phase = "queue_homing"
+    c._record("/clear", {"position": {"x": 300.0, "y": 40.0}, "channel": 2},
+              {"accepted": True, "virtual_time_s": 20.0, "clear_result": "success"})
+    c.homing_diag = [{"ch": 2, "src": "queue:ls", "cleared_by": "邻域", "bearings_tried": 2,
+                      "cleared_at_bearing": 0, "cost": {"n_clear": 3, "dist": 120.0},
+                      "episode_moves_m": 120.0, "episode_time_s": 41.0}]
+    c.clear_diag = [{"ch": 2, "src": "queue:ls|邻域", "result": "success",
+                     "omega_radius_m": 25.0}]
+    c.meta = {"cleared_count": 1}
+    s = c.build_summary()
+    need = {"problem", "config", "phase_stats", "locate_stats", "clear_diag",
+            "homing_stats", "movement_distance_m", "robot"}
+    missing = need - set(s)
+    keys = {"use_neg_info", "use_pso", "do_verify", "neighbor_rings", "on_way_delta"}
+    miss_cfg = keys - set(s["config"])
+    print(f"摘要构造: {'成功' if not missing else '缺键 ' + str(missing)}; "
+          f"config: {'完整' if not miss_cfg else '缺 ' + str(miss_cfg)}")
+    return not missing and not miss_cfg
+
+
+def verify_determinism(n_cases=20, seed=777):
+    """稳定性标准第 5 条: 固定种子重复运行结果必须完全一致(逐案例逐指标比对)。"""
+    a = run_mc(n_cases, 1.0, diag=True)
+    b = run_mc(n_cases, 1.0, diag=True)
+    keys = ("cr", "L", "n", "f")
+    same = all(abs(a[k] - b[k]) < 1e-12 for k in keys)
+    # 逐案例比对(不仅是均值): 用同 seed 单独重跑两遍取明细
+    def cases():
+        rng = np.random.default_rng(seed)
+        out = []
+        for _ in range(n_cases):
+            env = exp.Env(rng, directional=True, p_dir=1.0)
+            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                k = rb.run()
+            out.append((k, round(cli.dist, 6), cli.n_measure, cli.n_clear,
+                        tuple(sorted(rb.supp_skipped))))
+        return out
+    c1, c2 = cases(), cases()
+    same_case = c1 == c2
+    print(f"固定种子一致性: 均值一致 = {same}; 逐案例一致 = {same_case} "
+          f"({n_cases} 例, seed={seed})")
+    return same and same_case
+
+
+def patho_sources(rng, kind, n):
+    """构造极端/病理场景的源集合(随机采样很难碰到的几何与指向)。"""
+    ch = [int(c) for c in rng.choice(np.arange(1, r4.N_CH+1), size=n, replace=False)]
+    out = []
+    for i, c in enumerate(ch):
+        if kind == "edge_out":              # 圆盘边界且指向外侧(只有盘外点能测到)
+            a = rng.uniform(0, 2*np.pi); r = rng.uniform(1750, 1800)
+            pos = np.array([r*math.cos(a), r*math.sin(a)]); point = a
+        elif kind == "edge_tangent":        # 圆盘边界且切向
+            a = rng.uniform(0, 2*np.pi); r = rng.uniform(1700, 1800)
+            pos = np.array([r*math.cos(a), r*math.sin(a)]); point = a + math.pi/2
+        elif kind == "center_away":         # 近中心且背离原点(经典病理源)
+            a = rng.uniform(0, 2*np.pi); r = rng.uniform(0, 150)
+            pos = np.array([r*math.cos(a), r*math.sin(a)]); point = a + math.pi
+        else:                               # 随机位置
+            r = r4.R_AREA*math.sqrt(rng.uniform()); a = rng.uniform(0, 2*np.pi)
+            pos = np.array([r*math.cos(a), r*math.sin(a)])
+            if kind in ("random_dir", "worst_rx", "degenerate"):
+                point = rng.uniform(0, 2*np.pi)
+            elif kind == "random_omni":
+                point = None
+            else:
+                point = rng.uniform(0, 2*np.pi) if rng.uniform() < 0.5 else None
+        rx = 1000.0 if kind == "worst_rx" else float(rng.uniform(1000, 1500))
+        out.append(dict(pos=pos, ch=c, r_rx=rx, pointing=point))
+    if kind == "degenerate" and len(out) >= 2:      # 两源相距 <25m: 近简并
+        d = np.array([rng.uniform(-20, 20), rng.uniform(-20, 20)])
+        out[1]["pos"] = out[0]["pos"] + d
+    return out
+
+
+def make_env(rng, specs):
+    """用显式源集合替换 Env 的随机源(不改 experiment.py, 只覆盖构造结果)。"""
+    env = exp.Env(rng, n_src=len(specs), directional=True, p_dir=1.0)
+    env.sources = specs
+    env.ch_by_id = {s["ch"]: s for s in specs}
+    env.cleared = set()
+    return env
+
+
+def run_patho(n_rep=200, seed=99):
+    """极端场景压力测试: 每类场景重复 n_rep 次, 报告漏清与时间分布 + 漏清率置信上界。"""
+    scen = [("随机·全定向", "random_dir", 13), ("随机·50%定向", "random_50", 13),
+            ("随机·全向", "random_omni", 13), ("上界16源·定向50%", "random_50", 16),
+            ("下界10源·定向50%", "random_50", 10),
+            ("最坏接收(全1000m)+定向50%", "worst_rx", 13),
+            ("边界外指(全) ", "edge_out", 13), ("边界切向(全)", "edge_tangent", 13),
+            ("近中心背向(全)", "center_away", 13), ("近简并双源(全)", "degenerate", 13)]
+    print(f"极端场景压力测试: 每类 {n_rep} 次")
+    print("%-26s%9s%8s%9s%9s%11s%13s" % ("场景", "全清率", "漏清例", "平均(s)", "P95(s)",
+                                         "最大(s)", "漏清率95%上界"))
+    rng = np.random.default_rng(seed)
+    bad = 0
+    for label, kind, n in scen:
+        k = kind if kind != "random_50" else "random_dir"
+        crs = []; Ts = []; miss = 0
+        for _ in range(n_rep):
+            specs = patho_sources(rng, k, n)
+            if kind == "random_50":
+                for s in specs:
+                    if rng.uniform() >= 0.5:
+                        s["pointing"] = None
+            env = make_env(rng, specs)
+            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                got = rb.run()
+            T = cli.dist/5 + cli.n_measure*5 + cli.n_switch*1 + cli.n_clear_ok*5 + cli.fail*3
+            crs.append(got/env.n_src); Ts.append(T)
+            if got < env.n_src:
+                miss += 1
+        Ts = np.array(Ts)
+        ub = 1 - 0.05**(1.0/n_rep) if miss == 0 else None
+        bad += miss
+        print("%-26s%8.1f%%%8d%9.0f%9.0f%11.0f%13s" % (
+            label, np.mean(crs)*100, miss, Ts.mean(), np.percentile(Ts, 95), Ts.max(),
+            f"{ub*100:.2f}%" if ub is not None else "见漏清例"))
+    print(f"合计漏清 {bad} 例")
+    return bad
+
+
+class MockClient:
+    def __init__(self, env):
+        self.env = env; self.position = (0.0, 0.0); self.channel = 1
+        self.remaining_real = 1200; self.dist = 0.0; self.n_measure = 0; self.n_clear = 0
+        self.fail = 0; self.n_switch = 0; self.n_clear_ok = 0
+        self.phase = "init"; self.ph = {}          # 阶段 -> [移动, 检测, 清除]
+    def _p(self):
+        return self.ph.setdefault(getattr(self, "phase", "init"), [0.0, 0, 0])
+    def _move(self, x, y):
+        d = math.hypot(x-self.position[0], y-self.position[1])
+        self.dist += d; self._p()[0] += d; self.position = (x, y)
+    def enter(self): pass
+    def measure(self, x, y, ch):
+        self._move(x, y)
+        if ch != self.channel: self.n_switch += 1
+        self.channel = ch; self.n_measure += 1; self._p()[1] += 1
+        r, svd = self.env.measure(np.array([x, y]), ch); return True, r, svd
+    def clear(self, x, y, ch):
+        self._move(x, y)
+        if ch != self.channel: self.n_switch += 1
+        self.channel = ch; self.n_clear += 1; self._p()[2] += 1
+        r = self.env.clear(np.array([x, y]), ch)
+        if r != 'success': self.fail += 1
+        else: self.n_clear_ok += 1
+        return True, r
+    def exit(self): pass
+
+
+def run_mc(n_cases, p_dir, diag=False):
+    rng = np.random.default_rng(3026)
+    ratios = []; dists = []; meas = []; fails = []; Ts = []
+    ph = {}; lh = []; cd = []
+    for _ in range(n_cases):
+        env = exp.Env(rng, directional=True, p_dir=p_dir)
+        cli = MockClient(env); rb = r4.Problem4Robot(cli)
+        with contextlib.redirect_stdout(io.StringIO()):
+            n = rb.run()
+        ratios.append(n/env.n_src); dists.append(cli.dist)
+        meas.append(cli.n_measure); fails.append(cli.fail)
+        Ts.append(cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
+                  + cli.n_clear_ok*5 + cli.fail*3)      # 统一口径
+        if diag:
+            for k, v in cli.ph.items():
+                a = ph.setdefault(k, [0.0, 0, 0])
+                a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
+            lh.extend(getattr(cli, "locate_history", []))
+            cd.extend(getattr(cli, "clear_diag", []))
+    out = dict(cr=np.mean(ratios), L=np.mean(dists), n=np.mean(meas), f=np.mean(fails),
+               T=float(np.mean(Ts)))
+    if diag:
+        out.update(ph=ph, locate=lh, clear=cd, n_cases=n_cases)
+    return out
+
+
+def show_diag(tag, r):
+    """打印分阶段归因 + 定位方式/Ω半径 + 清除来源成功率。"""
+    n = r["n_cases"]
+    print(f"\n[诊断{tag}] 分阶段归因(每例均值):")
+    print("  %-16s%11s%9s%9s%8s" % ("阶段", "移动(m)", "检测", "清除", "时间(s)"))
+    for k in sorted(r["ph"], key=lambda x: -r["ph"][x][0]):
+        mv, nm, nc = r["ph"][k]
+        print("  %-16s%11.0f%9.1f%9.1f%8.0f" % (
+            k, mv/n, nm/n, nc/n, (mv/5 + nm*5 + nc*3)/n))
+    def stat(v):
+        if not v:
+            return "无"
+        v = np.array(v, float)
+        return f"n={len(v)} 中位={np.median(v):.1f} 均值={v.mean():.1f} P90={np.percentile(v,90):.1f}"
+    lh = r["locate"]
+    print(f"[诊断{tag}] 定位调用 {len(lh)} 次: "
+          f"MEC={sum(1 for h in lh if h.get('method')=='mec')} "
+          f"LS={sum(1 for h in lh if h.get('method')=='ls')} "
+          f"不可定位={sum(1 for h in lh if h.get('method') is None)}")
+    print("  Ω半径(m) MEC 档: " + stat([h["omega_radius_m"] for h in lh
+                                        if h.get("method") == "mec"
+                                        and h.get("omega_radius_m") is not None]))
+    print("  Ω半径(m) LS  档: " + stat([h["omega_radius_m"] for h in lh
+                                        if h.get("method") == "ls"
+                                        and h.get("omega_radius_m") is not None]))
+    print(f"[诊断{tag}] 清除尝试 {len(r['clear'])} 次, 按来源:")
+    g = {}
+    for d in r["clear"]:
+        key = str(d.get("src", "?")).replace("|", "/")
+        a = g.setdefault(key, [0, 0, []])
+        a[0] += 1; a[1] += 1 if d.get("result") == "success" else 0
+        if d.get("omega_radius_m") is not None:
+            a[2].append(d["omega_radius_m"])
+    for k in sorted(g, key=lambda x: -g[x][0]):
+        a = g[k]
+        om = f" Ω半径中位={np.median(a[2]):.1f}m" if a[2] else ""
+        print("  %-26s n=%5d 成功=%5d (%5.1f%%)%s" % (
+            k, a[0], a[1], 100.0*a[1]/a[0], om))
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    args = [a for a in _sys.argv[1:] if not a.startswith("--")]
+    if "--patho" in _sys.argv:
+        n_rep = int(args[0]) if args else 200
+        bad = run_patho(n_rep)
+        _sys.exit(0 if bad == 0 else 1)
+    if "--cert" in _sys.argv:
+        # 只做"索引映射 + 证书正确性 + 摘要 schema + 固定种子一致性"复核(回归用)
+        ok1 = verify_path_index()
+        ok3 = verify_summary_schema()
+        ok4 = verify_determinism()
+        ok2 = verify_certificate(int(args[0]) if args else 60)
+        print(f"结论: 索引映射 {'通过' if ok1 else '不通过'}, "
+              f"摘要 schema {'通过' if ok3 else '不通过'}, "
+              f"固定种子 {'通过' if ok4 else '不通过'}, "
+              f"证书 {'通过' if ok2 else '不通过'}")
+        _sys.exit(0 if (ok1 and ok2 and ok3 and ok4) else 1)
+    n = int(args[0]) if args else 30
+    margin = float(args[1]) if len(args) > 1 else None
+    diag = "--diag" in _sys.argv
+    if margin is not None:
+        r4.MESH_MARGIN = margin
+    print(f"(MESH_MARGIN={r4.MESH_MARGIN})")
+    verify_mesh()
+    verify_path_index()
+    verify_summary_schema()
+    print()
+    for pd in [0.0, 0.5, 1.0]:
+        r = run_mc(n, pd, diag=diag)
+        print(f"定向比例{pd*100:>3.0f}%: 清除率={r['cr']*100:6.2f}%  移动={r['L']:6.0f}m  "
+              f"检测={r['n']:5.0f}  清除失败={r['f']:.2f}  总虚拟时间(统一口径)={r['T']:6.0f}s")
+        if diag:
+            show_diag(f" {pd*100:.0f}%", r)
