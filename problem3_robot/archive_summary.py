@@ -104,7 +104,7 @@ def main():
         deep = _deep(s)
         mv = _pick(s, "movement_distance_m")
         meas = _pick(s, "total_measure", "measure_count")
-        phases = _pick(s, "phases", default={}) or {}
+        phases = _pick(s, "phases", "phase_stats", default={}) or {}
         rows.append(dict(file=os.path.basename(f), family=(
             os.path.basename(f).split("_log_")[0] if "_log_" in os.path.basename(f) else "other"),
             vt=vt, cleared=cleared, nsrc=nsrc,
