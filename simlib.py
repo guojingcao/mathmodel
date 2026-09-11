@@ -147,6 +147,7 @@ class SimClient:
         self._phase = "init"
         self.ph = {}                 # 阶段 -> [移动, 检测, 清除ok, 清除fail, 换频]
         self.ledger = []             # 逐动作 (phase, kind, cost_s) 便于分账核对
+        self.trace = []              # 逐动作 (phase, kind, ch, result, x, y) 供策略审计
         self.repeat_same_point_channel = 0   # "同点同频道重复测量"计数器(硬约束检查)
 
     # --- 阶段 ---
@@ -188,6 +189,7 @@ class SimClient:
         self._p()[1] += 1
         self.ledger.append((self._phase, "measure", 5.0))
         r, svd = self.env.measure(np.array([x, y]), ch)
+        self.trace.append((self._phase, "measure", int(ch), r, x, y))
         return True, r, svd
 
     def clear(self, x, y, ch):
@@ -207,6 +209,7 @@ class SimClient:
             self.fail += 1
             self._p()[3] += 1
             self.ledger.append((self._phase, "clear_fail", 3.0))
+        self.trace.append((self._phase, "clear", int(ch), r, x, y))
         return True, r
 
     def exit(self):
