@@ -5,57 +5,35 @@
   A 贝叶斯概率图排序   ORDER_BY_PROB
   B DOP(交会角)预筛   DOP_PRESCREEN
   C 滚动优化(受限顺路清除)  ON_WAY_DELTA  (0/None = 关闭)
-  D 自适应网格 + Monte Carlo 验证  -> 本脚本本身就是 D 的一部分(1000 案例统计)
+  E LS 试探清除信任门限 LS_CLEAR_GATE
+  O 机会性顺带观测     OPP_MEASURE
+  R 补测点复用         SUPP_REUSE
 
-指标: 清除率 / 平均移动距离 / 平均检测次数 / 估计总虚拟时间 / 90分位时间
+统一口径(审查后):
+  * 每个实验臂 = **完整冻结配置 + 本臂覆盖项**(simlib.config_scope, 退出必恢复)
+  * 计时只用 simlib.sim_time(); 阶段时间用 simlib.phase_time()(含换频与清除成本)
+  * 清除率用真值核验(simlib.check_clearance): 案例全清率 与 平均源清除比例 分开报告
+  * 场景按 (seed, 案例编号) 派生并落盘 scene_hash, 可独立验证配对
+  * 统计对空集/单例安全(simlib.summarize / paired_stat), 稀疏模块给 bootstrap 区间
 """
-import importlib.util, sys, math, numpy as np, io, contextlib, time
+import sys, math, time, contextlib, io
+from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("rb", r"D:\My_MathModeling_Project\problem3_robot\robot.py")
-rb = importlib.util.module_from_spec(spec); sys.modules["rb"] = rb
-spec.loader.exec_module(rb)
-spec2 = importlib.util.spec_from_file_location("exp", r"D:\My_MathModeling_Project\2026B_solution\verify\experiment.py")
-exp = importlib.util.module_from_spec(spec2); sys.modules["exp"] = exp
-spec2.loader.exec_module(exp)
+import numpy as np
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import simlib
+from simlib import (FROZEN3, FROZEN4_CLS, FROZEN4_MOD, frozen3, case_env, scene_hash,
+                    SimClient, sim_time, ledger_time, phase_time, check_clearance,
+                    summarize, paired_stat, bootstrap_ci, config_scope, cfg_hash)
 
-class MockClient:
-    def __init__(self, env):
-        self.env = env; self.position = (0.0, 0.0); self.channel = 1
-        self.remaining_real = 1200; self.dist = 0.0; self.n_measure = 0
-        self.fail = 0; self.meta = {}
-        self.n_clear = 0; self.n_clear_ok = 0; self.n_switch = 0
-        self.phase = "init"; self.ph = {}      # 阶段 -> [移动, 检测, 清除]
-    def _p(self):
-        return self.ph.setdefault(getattr(self, "phase", "init"), [0.0, 0, 0])
-    def _move(self, x, y):
-        d = math.hypot(x-self.position[0], y-self.position[1])
-        self.dist += d; self._p()[0] += d; self.position = (x, y)
-    def enter(self): pass
-    def measure(self, x, y, ch):
-        self._move(x, y)
-        if ch != self.channel: self.n_switch += 1
-        self.channel = ch; self.n_measure += 1; self._p()[1] += 1
-        r, svd = self.env.measure(np.array([x, y]), ch); return True, r, svd
-    def clear(self, x, y, ch):
-        self._move(x, y)
-        if ch != self.channel: self.n_switch += 1
-        self.channel = ch; self.n_clear += 1; self._p()[2] += 1
-        r = self.env.clear(np.array([x, y]), ch)
-        if r != 'success': self.fail += 1
-        else: self.n_clear_ok += 1
-        return True, r
-    def exit(self): pass
+rb = simlib.load_module("rb", Path(__file__).resolve().parent / "robot.py")
+exp = simlib.exp
 
 
-def case_env(seed, k, **kw):
-    """按(seed, 案例编号)独立派生场景随机源。
 
-    必须这样做: exp.Env 用同一个 rng 既生成场景、又在每次 measure 抽 ±1° 噪声,
-    若各臂共用一个 rng, 臂间测量次数不同就会错开随机流 -> 同一编号在不同臂下是
-    **不同场景**, 逐案例配对失效。按编号派生后, 各臂面对完全相同的场景。
-    """
-    return exp.Env(np.random.default_rng([int(seed), int(k)]), **kw)
+
 
 
 def run_opp(opp_on, max_per_point=2, target="spec", n=400, seed=2026, paired=False):
@@ -64,27 +42,30 @@ def run_opp(opp_on, max_per_point=2, target="spec", n=400, seed=2026, paired=Fal
     时间模型(与题设一致): 移动/5 + 检测*5 + 换频*1 + 成功清除*5 + 失败清除*3。
     同时记录补测阶段时间(用于在"关闭版"结果上预先定义困难子集, 避免选择偏差)。
     """
-    rb.Problem3Robot.OPP_MEASURE = opp_on
-    rb.Problem3Robot.OPP_MAX_PER_POINT = max_per_point
-    rb.Problem3Robot.OPP_TARGET = target
+    cfg = frozen3(OPP_MEASURE=opp_on, OPP_MAX_PER_POINT=max_per_point,
+                  OPP_TARGET=target, SUPP_REUSE=False)
     rows = []
+    scope = config_scope((rb.Problem3Robot, cfg))
+    scope.__enter__()
     for k in range(n):
         env = case_env(seed, k, directional=False)
-        cli = MockClient(env); robot = rb.Problem3Robot(cli)
+        cli = SimClient(env); robot = rb.Problem3Robot(cli)
         with contextlib.redirect_stdout(io.StringIO()):
-            k = robot.run()
-        T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
-             + cli.n_clear_ok*5 + cli.fail*3)
+            n_ret = robot.run()
+        chk = check_clearance(n_ret, cli, env)
+        T = sim_time(cli)
         opp = list(getattr(cli, "opp_diag", []))
         ph = getattr(cli, "ph", {})
         sup_t = ph.get("supplement", [0.0, 0, 0])
         rows.append(dict(
-            cr=k/env.n_src, miss=1 if k < env.n_src else 0, n_src=env.n_src,
+            cr=chk["src_clear_ratio"], miss=1-chk["case_full_clear"],
+            full=chk["case_full_clear"], miss_src=chk["missing_src"],
+            consistent=chk["consistent"], n_src=chk["n_src"],
+            scene=scene_hash(env),
             T=T, dist=cli.dist, meas=cli.n_measure, sw=cli.n_switch,
             clear=cli.n_clear, fail=cli.fail,
-            supp_t=sup_t[0]/5 + sup_t[1]*5,                 # 补测阶段时间(选困难子集用)
-            homing_t=(ph.get("queue_homing", [0.0, 0, 0])[0]/5
-                      + ph.get("queue_homing", [0.0, 0, 0])[1]*5),
+            supp_t=phase_time(cli, "supplement"),                 # 补测阶段时间(选困难子集用)
+            homing_t=phase_time(cli, "queue_homing"),
             opp_n=len(opp),
             opp_sig=sum(1 for d in opp if d.get("result") in ("direction", "near")),
             opp_cert=sum(1 for d in opp if d.get("became_certified")),
@@ -161,31 +142,30 @@ def paired_opp(n=400, seed=2026):
 def run_reuse(reuse=False, gate=2000.0, saving=100.0, opp=False, opp_max=1,
               delete_mode="cert", n=300, seed=2026, paired=False):
     """模块R(补测点复用)配置运行: 逐案例返回时间与机制明细。"""
-    rb.Problem3Robot.SUPP_REUSE = reuse
-    rb.Problem3Robot.SUPP_REUSE_ROUTE_GATE_M = gate
-    rb.Problem3Robot.SUPP_REUSE_MIN_SAVING_M = saving
-    rb.Problem3Robot.SUPP_REUSE_DELETE_MODE = delete_mode
-    rb.Problem3Robot.OPP_MEASURE = opp
-    rb.Problem3Robot.OPP_MAX_PER_POINT = opp_max
-    rng = np.random.default_rng(seed)
+    cfg = frozen3(SUPP_REUSE=reuse, SUPP_REUSE_ROUTE_GATE_M=gate,
+                  SUPP_REUSE_MIN_SAVING_M=saving, SUPP_REUSE_DELETE_MODE=delete_mode,
+                  OPP_MEASURE=opp, OPP_MAX_PER_POINT=opp_max, OPP_TARGET="spec")
+    scope = config_scope((rb.Problem3Robot, cfg))
+    scope.__enter__()
     rows = []
     for k in range(n):
         env = case_env(seed, k, directional=False)
-        cli = MockClient(env); robot = rb.Problem3Robot(cli)
+        cli = SimClient(env); robot = rb.Problem3Robot(cli)
         with contextlib.redirect_stdout(io.StringIO()):
-            k_cleared = robot.run()
-        T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
-             + cli.n_clear_ok*5 + cli.fail*3)
+            n_ret = robot.run()
+        chk = check_clearance(n_ret, cli, env)
+        T = sim_time(cli)
         rd = list(getattr(cli, "reuse_diag", []))
         at = [x for x in rd if x.get("kind") != "gate"]
         rem = [x for x in at if x.get("removed")]
         ph = getattr(cli, "ph", {})
-        st = ph.get("supplement", [0.0, 0, 0])
         od = list(getattr(cli, "opp_diag", []))
         rows.append(dict(
-            cr=k_cleared/env.n_src, miss=1 if k_cleared < env.n_src else 0, n_src=env.n_src,
+            cr=chk["src_clear_ratio"], miss=1-chk["case_full_clear"],
+            full=chk["case_full_clear"], miss_src=chk["missing_src"],
+            consistent=chk["consistent"], n_src=chk["n_src"], scene=scene_hash(env),
             T=T, dist=cli.dist, meas=cli.n_measure, sw=cli.n_switch, fail=cli.fail,
-            supp_t=st[0]/5 + st[1]*5,
+            supp_t=phase_time(cli, "supplement"),
             gate=sum(1 for x in rd if x.get("kind") == "gate" and x.get("armed")),
             attempts=len(at), signals=sum(1 for x in at
                                           if x.get("result") in ("direction", "near")),
@@ -195,6 +175,7 @@ def run_reuse(reuse=False, gate=2000.0, saving=100.0, opp=False, opp_max=1,
             extra_t=sum(x.get("time_cost") or 0.0 for x in at),
             opp_attempts=len(od),
         ))
+    scope.__exit__(None, None, None)
     return rows
 
 
@@ -290,24 +271,27 @@ def validate_reuse(d0, s0, n=800, seed=20260711):
 
 
 def run_cfg(order_prob, dop, on_way, n=300, seed=2026, ls_gate=None, paired=False):
-    rb.Problem3Robot.ORDER_BY_PROB = order_prob
-    rb.Problem3Robot.DOP_PRESCREEN = dop
-    rb.Problem3Robot.ON_WAY_DELTA = on_way
-    rb.Problem3Robot.LS_CLEAR_GATE = ls_gate
-    rng = np.random.default_rng(seed)
+    """模块 A/B/C/E 消融: 每臂 = 完整冻结配置 + 本臂覆盖项(含显式关闭 O/R)。"""
+    cfg = frozen3(ORDER_BY_PROB=order_prob, DOP_PRESCREEN=dop,
+                  ON_WAY_DELTA=on_way, LS_CLEAR_GATE=ls_gate)
     crs = []; Ls = []; ms = []; fs = []; Ts = []; per_case = []
-    for k in range(n):
-        env = case_env(seed, k, directional=False)   # 同一 seed -> 各配置面对完全相同的案例(配对)
-        cli = MockClient(env); robot = rb.Problem3Robot(cli)
-        with contextlib.redirect_stdout(io.StringIO()):
-            k = robot.run()
-        T = cli.dist/5 + cli.n_measure*5
-        crs.append(k/env.n_src); Ls.append(cli.dist); ms.append(cli.n_measure); fs.append(cli.fail)
-        Ts.append(T)
-        if paired:
-            per_case.append((k/env.n_src, cli.dist, cli.n_measure, cli.fail, T))
+    with config_scope((rb.Problem3Robot, cfg)):
+        for k in range(n):
+            env = case_env(seed, k, directional=False)   # 同编号 = 完全相同场景(配对)
+            cli = SimClient(env); robot = rb.Problem3Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                n_ret = robot.run()
+            chk = check_clearance(n_ret, cli, env)
+            T = sim_time(cli)
+            crs.append(chk["src_clear_ratio"]); Ls.append(cli.dist)
+            ms.append(cli.n_measure); fs.append(cli.fail)
+            Ts.append(T)
+            if paired:
+                per_case.append((chk["src_clear_ratio"], cli.dist, cli.n_measure,
+                                 cli.fail, T, chk["case_full_clear"]))
     out = dict(cr=np.mean(crs), L=np.mean(Ls), n=float(np.mean(ms)), f=float(np.mean(fs)),
-               T=float(np.mean(Ts)), T90=float(np.percentile(Ts, 90)))
+               T=float(np.mean(Ts)), T90=float(np.percentile(Ts, 90)),
+               cfg_hash=cfg_hash(cfg))
     if paired:
         out["per_case"] = np.array(per_case)
     return out
@@ -344,7 +328,32 @@ def paired_ls_gate(n=300, seed=2026):
     return res
 
 
-if __name__ == "__main__":
+def order_consistency_test(n=60, seed=4242):
+    """审查建议的测试: 同一臂在(独立跑 / 前置其他实验 / 打乱顺序)三种情况下逐案例必须一致。"""
+    def one(cfg, tag):
+        rows = run_reuse(cfg.get("reuse", False), cfg.get("gate", 1500.0),
+                         cfg.get("saving", 0.0), cfg.get("opp", False),
+                         n=n, seed=seed, delete_mode=cfg.get("delete", "cert_or_ls"))
+        return [(r["scene"], round(r["T"], 6), r["full"], r["consistent"]) for r in rows]
+    a = one({"reuse": True}, "独立: 只跑 R")
+    one({"reuse": False, "opp": True}, "前置: 先跑 O")
+    b = one({"reuse": True}, "顺序: 先 O 再 R")
+    one({"reuse": False}, "前置: 先跑基线")
+    c = one({"reuse": True}, "顺序: 基线后跑 R")
+    same_ab = (a == b); same_ac = (a == c)
+    print(f"\n[顺序一致性] 独立跑 vs 前置O后跑: {same_ab}; 独立跑 vs 基线后跑: {same_ac} "
+          f"(n={n}, seed={seed})")
+    if not (same_ab and same_ac):
+        for i, (x, y) in enumerate(zip(a, b)):
+            if x != y:
+                print(f"  首处不一致 case{i}: {x} vs {y}"); break
+    return same_ab and same_ac
+
+
+def _main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--order-test":
+        ok = order_consistency_test(int(sys.argv[2]) if len(sys.argv) > 2 else 60)
+        sys.exit(0 if ok else 1)
     if len(sys.argv) > 1 and sys.argv[1] == "--reuse":
         N = int(sys.argv[2]) if len(sys.argv) > 2 else 300
         d0, s0 = train_scan_reuse(N)
@@ -372,3 +381,11 @@ if __name__ == "__main__":
         r = run_cfg(a, b, c, N)
         print("%-24s%8.2f%%%11.0f%9.0f%9.2f%11.0f%11.0f  [%.0fs]" % (
             name, r['cr']*100, r['L'], r['n'], r['f'], r['T'], r['T90'], time.time()-t0), flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        _main()
+    finally:
+        # 无条件复位到冻结配置, 防止异常时类属性残留污染后续实验
+        simlib.apply_cfg(rb.Problem3Robot, FROZEN3)

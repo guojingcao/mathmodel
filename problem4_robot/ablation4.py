@@ -1,41 +1,32 @@
 # -*- coding: utf-8 -*-
-"""问题4 外部改进模块消融实验
+"""问题4 外部改进模块消融实验(统一口径: 共享库 simlib)
 
 模块:
   1+4 负信息 -> 联合可行域/指向状态   USE_NEG_INFO
   3   改进 PSO 精化位置               USE_PSO
   5   清除后多方向复核                 DO_VERIFY
+  N   归航邻域试探圈                  NEIGHBOR_RINGS
+  S   补测距离上限                    SUPP_MAX_DIST
+  D   顺路清除阈值                    ON_WAY_DELTA
+  M   网格几何(边长/外扩/旋转/平移)    MESH_*
+每臂 = 完整冻结配置 + 本臂覆盖项(simlib.config_scope, 退出必恢复); 计时/清除核验统一。
 """
-import importlib.util, sys, math, numpy as np, io, contextlib, time
+import sys, math, time, contextlib, io
+from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("r4", r"D:\My_MathModeling_Project\problem4_robot\robot4.py")
-r4 = importlib.util.module_from_spec(spec); sys.modules["r4"] = r4; spec.loader.exec_module(r4)
-spec2 = importlib.util.spec_from_file_location("exp", r"D:\My_MathModeling_Project\2026B_solution\verify\experiment.py")
-exp = importlib.util.module_from_spec(spec2); sys.modules["exp"] = exp; spec2.loader.exec_module(exp)
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import simlib
+from simlib import (FROZEN4_CLS, FROZEN4_MOD, frozen4_cls, frozen4_mod, case_env,
+                    scene_hash, SimClient, sim_time, ledger_time, check_clearance,
+                    summarize, paired_stat, bootstrap_ci, config_scope, cfg_hash)
+
+r4 = simlib.load_module("r4", Path(__file__).resolve().parent / "robot4.py")
+exp = simlib.exp
 
 
-class MockClient:
-    def __init__(self, env):
-        self.env = env; self.position = (0.0, 0.0); self.channel = 1
-        self.remaining_real = 1200; self.dist = 0.0; self.n_measure = 0; self.fail = 0
-        self.n_switch = 0; self.n_clear_ok = 0; self.n_clear = 0; self.meta = {}
-    def _move(self, x, y):
-        self.dist += math.hypot(x-self.position[0], y-self.position[1]); self.position = (x, y)
-    def enter(self): pass
-    def measure(self, x, y, ch):
-        self._move(x, y)
-        if ch != self.channel: self.n_switch += 1
-        self.channel = ch; self.n_measure += 1
-        r, svd = self.env.measure(np.array([x, y]), ch); return True, r, svd
-    def clear(self, x, y, ch):
-        self._move(x, y)
-        if ch != self.channel: self.n_switch += 1
-        self.channel = ch; self.n_clear += 1
-        r = self.env.clear(np.array([x, y]), ch)
-        if r != 'success': self.fail += 1
-        else: self.n_clear_ok += 1
-        return True, r
-    def exit(self): pass
 
 
 def run_cfg(neg, pso, verify, n=8, ratios=(0.5, 1.0), seed=3026):
@@ -47,22 +38,16 @@ def run_cfg(neg, pso, verify, n=8, ratios=(0.5, 1.0), seed=3026):
         crs = []; Ls = []; ms = []; fs = []; Ts = []
         for ci in range(n):
             env = case_env(seed, ci, directional=True, p_dir=pd)
-            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            cli = SimClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
-                k = rb.run()
-            crs.append(k/env.n_src); Ls.append(cli.dist); ms.append(cli.n_measure); fs.append(cli.fail)
+                n_ret = rb.run()
+            chk = check_clearance(n_ret, cli, env)
+            crs.append(chk["src_clear_ratio"]); Ls.append(cli.dist); ms.append(cli.n_measure); fs.append(cli.fail)
             Ts.append(cli.dist/5 + cli.n_measure*5)
         out[pd] = (np.mean(crs), np.mean(Ls), np.mean(ms), float(np.mean(fs)), np.mean(Ts))
     return out
 
 
-def case_env(seed, k, **kw):
-    """按(seed, 案例编号)独立派生场景随机源。
-
-    exp.Env 用同一个 rng 既生成场景、又在每次 measure 抽 ±1° 噪声; 若各臂共用一个 rng,
-    臂间测量次数不同就会错开随机流 -> 同一编号在不同臂下是不同场景, 配对失效。
-    """
-    return exp.Env(np.random.default_rng([int(seed), int(k)]), **kw)
 
 
 def run_neighbor(rings, n=30, seed=3026, ratios=(0.5, 1.0)):
@@ -77,13 +62,15 @@ def run_neighbor(rings, n=30, seed=3026, ratios=(0.5, 1.0)):
         rows = []
         for ci in range(n):
             env = case_env(seed, ci, directional=True, p_dir=pd)
-            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            cli = SimClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
-                k = rb.run()
-            T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
-                 + cli.n_clear_ok*5 + cli.fail*3)
+                n_ret = rb.run()
+            chk = check_clearance(n_ret, cli, env)
+            T = sim_time(cli)
             rows.append(dict(
-                cr=k/env.n_src, miss=1 if k < env.n_src else 0, n_src=env.n_src,
+                cr=chk["src_clear_ratio"], miss=1-chk["case_full_clear"],
+                full=chk["case_full_clear"], miss_src=chk["missing_src"],
+                consistent=chk["consistent"], n_src=chk["n_src"], scene=scene_hash(env),
                 dist=cli.dist, meas=cli.n_measure, clear=cli.n_clear,
                 fail=cli.fail, ok=cli.n_clear_ok, sw=cli.n_switch, T=T,
                 homing=list(getattr(cli, "homing_diag", [])),
@@ -203,16 +190,18 @@ def run_supp_cap(cap, n=400, seed=3026, ratios=(0.5, 1.0)):
         rows = []
         for ci in range(n):
             env = case_env(seed, ci, directional=True, p_dir=pd)
-            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            cli = SimClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
-                k = rb.run()
-            T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
-                 + cli.n_clear_ok*5 + cli.fail*3)
+                n_ret = rb.run()
+            chk = check_clearance(n_ret, cli, env)
+            T = sim_time(cli)
             sup = list(getattr(cli, "supp_diag", []))
             hom = list(getattr(cli, "homing_diag", []))
             sk = set(rb.supp_skipped)
             rows.append(dict(
-                cr=k/env.n_src, miss=1 if k < env.n_src else 0, n_src=env.n_src,
+                cr=chk["src_clear_ratio"], miss=1-chk["case_full_clear"],
+                full=chk["case_full_clear"], miss_src=chk["missing_src"],
+                consistent=chk["consistent"], n_src=chk["n_src"], scene=scene_hash(env),
                 dist=cli.dist, meas=cli.n_measure, T=T, fail=cli.fail,
                 sup_dec=sum(1 for d in sup if d["action"] == "measure"),
                 sup_exec=sum(1 for d in sup if d["action"] == "exec"),
@@ -295,12 +284,14 @@ def run_mesh(mesh, n=400, seed=3026, ratios=(0.5, 1.0)):
         rows = []
         for ci in range(n):
             env = case_env(seed, ci, directional=True, p_dir=pd)
-            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            cli = SimClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
-                k = rb.run()
-            T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
-                 + cli.n_clear_ok*5 + cli.fail*3)
-            rows.append(dict(cr=k/env.n_src, miss=1 if k < env.n_src else 0, n_src=env.n_src,
+                n_ret = rb.run()
+            chk = check_clearance(n_ret, cli, env)
+            T = sim_time(cli)
+            rows.append(dict(cr=chk["src_clear_ratio"], miss=1-chk["case_full_clear"],
+                full=chk["case_full_clear"], miss_src=chk["missing_src"],
+                consistent=chk["consistent"], n_src=chk["n_src"], scene=scene_hash(env),
                              T=T, dist=cli.dist, meas=cli.n_measure, fail=cli.fail,
                              n_pts=len(rb.pts), n_tris=len(rb.tris),
                              cert_ok=bool(getattr(rb, "mesh_stats", None) is not None)))
@@ -354,14 +345,14 @@ def run_onway(delta, n=30, seed=3026, ratios=(0.5, 1.0)):
         rows = []
         for ci in range(n):
             env = case_env(seed, ci, directional=True, p_dir=pd)
-            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            cli = SimClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
-                k = rb.run()
-            T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
-                 + cli.n_clear_ok*5 + cli.fail*3)
+                n_ret = rb.run()
+            chk = check_clearance(n_ret, cli, env)
+            T = sim_time(cli)
             homing = sum(1 for d in getattr(cli, "clear_diag", [])
                          if "homing" in str(d.get("phase")) or "归航" in str(d.get("src")))
-            rows.append((k/env.n_src, cli.dist, cli.n_measure, cli.fail, T, homing))
+            rows.append((chk["src_clear_ratio"], cli.dist, cli.n_measure, cli.fail, T, homing))
         out[pd] = np.array(rows)
     return out
 
@@ -407,19 +398,20 @@ def paired_onway(n=30, seed=3026, arms=(200.0, 300.0, 500.0, 800.0, None)):
     return res
 
 
-if __name__ == "__main__":
+def _main4():
+    """命令行入口。每个实验臂都在 simlib.config_scope 内运行, 退出必恢复冻结配置。"""
     if len(sys.argv) > 1 and sys.argv[1] == "--mesh-paired":
         paired_mesh(int(sys.argv[2]) if len(sys.argv) > 2 else 400)
-        sys.exit(0)
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--supp-cap":
         paired_supp_cap(int(sys.argv[2]) if len(sys.argv) > 2 else 400)
-        sys.exit(0)
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--neighbor":
         paired_neighbor(int(sys.argv[2]) if len(sys.argv) > 2 else 100)
-        sys.exit(0)
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--onway-paired":
         paired_onway(int(sys.argv[2]) if len(sys.argv) > 2 else 30)
-        sys.exit(0)
+        return
     N = int(sys.argv[1]) if len(sys.argv) > 1 else 8
     cfgs = [
         ("基准(全关)",        False, False, False),
@@ -434,8 +426,17 @@ if __name__ == "__main__":
     for name, a, b, cc in cfgs:
         t0 = time.time()
         r = run_cfg(a, b, cc, N)
-        s = "%-20s" % name
+        line = "%-20s" % name
         for pd in (0.5, 1.0):
             cr, L, m, f, T = r[pd]
-            s += "%6.1f%%/%5.0f/%5.0fs" % (cr*100, L, T)
-        print(s + "  [%.0fs]" % (time.time()-t0), flush=True)
+            line += "%6.1f%%/%5.0f/%5.0fs" % (cr*100, L, T)
+        print(line + "  [%.0fs]" % (time.time()-t0), flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        _main4()
+    finally:
+        simlib.apply_cfg(r4.Problem4Robot, FROZEN4_CLS)
+        simlib.apply_cfg(r4, FROZEN4_MOD)
+
