@@ -59,6 +59,13 @@ class SimClient:
         self.phase = "init"         # 当前算法阶段(机器人回填, 用于分阶段统计)
         self.locate_history = []    # 机器人回填: 每次定位的 方式/Ω半径/交会角
         self.clear_diag = []        # 机器人回填: 每次清除的 定位来源/Ω半径/结果
+        self.opp_diag = []          # 机器人回填: 模块O 逐次机会观测明细
+        # 计数(供机会观测动作成本归因; 与离线 MockClient 同名同义)
+        self.dist = 0.0
+        self.n_measure = 0
+        self.n_clear = 0
+        self.n_clear_ok = 0
+        self.n_switch = 0
 
     def _new_req_id(self, tag):
         self._seq += 1
@@ -177,11 +184,48 @@ class SimClient:
             "phase_stats": phases,                      # 分阶段移动距离/动作数/虚拟时间
             "locate_stats": self._locate_stats(),       # 定位方式与 Ω 半径统计
             "clear_diag": self.clear_diag,              # 逐次清除的定位来源+Ω 半径(诊断)
+            "opp_stats": self._opp_stats(),             # 模块O 机会观测汇总
+            "opp_diag": self.opp_diag,                  # 模块O 逐次机会观测明细
             "robot": self.meta,
         }
         if self.error:
             s["error"] = self.error
         return s
+
+    def _opp_stats(self):
+        """模块O 汇总: 触发次数、命中率、认证转化率、补测规避与动作成本。"""
+        d = self.opp_diag
+        if not d:
+            return {"enabled": getattr(Problem3Robot, "OPP_MEASURE", None), "attempts": 0}
+        def stat(v):
+            v = [x for x in v if x is not None]
+            if not v:
+                return None
+            v = sorted(v)
+            return {"n": len(v), "median": round(v[len(v)//2], 1), "max": round(v[-1], 1)}
+        sig = [x for x in d if x.get("result") in ("direction", "near")]
+        cert = [x for x in d if x.get("became_certified")]
+        return {
+            "enabled": getattr(Problem3Robot, "OPP_MEASURE", None),
+            "max_per_point": getattr(Problem3Robot, "OPP_MAX_PER_POINT", None),
+            "attempts": len(d),
+            "signal": len(sig),
+            "no_signal": sum(1 for x in d if x.get("result") == "no_signal"),
+            "rejected": sum(1 for x in d if x.get("result") == "rejected"),
+            "became_certified": len(cert),
+            "avoided_supplement": sum(1 for x in d if x.get("avoided_supplement")),
+            "signal_rate": round(len(sig)/len(d), 4),
+            "cert_rate": round(len(cert)/len(d), 4),
+            "mec_before": stat([x.get("mec_before") for x in d]),
+            "mec_after": stat([x.get("mec_after") for x in d]),
+            "cross_pred_deg": stat([x.get("cross_pred_deg") for x in d]),
+            "min_sep_m": stat([x.get("min_sep_m") for x in d]),
+            "switch_count": stat([x.get("switch_count") for x in d]),
+            "time_cost_s": stat([x.get("time_cost") for x in d]),
+            "time_cost_total_s": round(sum(x.get("time_cost") or 0.0 for x in d), 1),
+            "by_site": {k: sum(1 for x in d if x.get("site") == k)
+                        for k in sorted({x.get("site") for x in d if x.get("site")})},
+        }
 
     def _locate_stats(self):
         """汇总定位诊断: MEC(Ω 半径<=20m) 与最小二乘(交会角) 各占多少、半径分布。"""
@@ -252,6 +296,10 @@ class SimClient:
         r = self.post("/measure", payload)
         if r.get("accepted") is not True:
             return False, "rejected", None
+        self.dist += math.hypot(x-self.position[0], y-self.position[1])
+        if channel != self.channel:
+            self.n_switch += 1
+        self.n_measure += 1
         self.position = (x, y)
         self.channel = channel
         return True, r.get("measure_result"), r.get("svd_deg")
@@ -265,7 +313,14 @@ class SimClient:
         r = self.post("/clear", payload)
         if r.get("accepted") is not True:
             return False, "rejected"
+        self.dist += math.hypot(x-self.position[0], y-self.position[1])
+        if channel != self.channel:
+            self.n_switch += 1
+        self.n_clear += 1
+        if r.get("clear_result") == "success":
+            self.n_clear_ok += 1
         self.position = (x, y)
+        self.channel = channel
         return True, r.get("clear_result")
 
     def exit(self):
@@ -415,6 +470,15 @@ class Problem3Robot:
     #   None = 当前策略: Ω 半径超限或可行域退化时, 直接用 LS 交会点盲清除;
     #   数值 = 仅当 Ω 半径 <= 该值才允许盲清除, 否则改走补测/归航(用于配对实验)。
     LS_CLEAR_GATE = None
+    # ===== 模块O(机会性顺带观测, 默认关): 既定清除停靠点兼作观测站 =====
+    # 定位: 只复用"本来就要去的清除点", 不重构搜索/覆盖/清除调度; 不改任何既有默认决策。
+    OPP_MEASURE = False        # 总开关(默认关 = 行为与冻结版完全一致)
+    OPP_MAX_PER_POINT = 2      # 每个停靠点最多顺带观测几个困难频道
+    OPP_MIN_CROSS_DEG = 45.0   # 预测有效交会角门槛
+    OPP_MIN_SEP_M = 200.0      # 与历史观测点最小间距
+    # 机会集合口径: "spec" = 规格版(Ω>20m ∨ 示向<2 ∨ 交会<30°, 即所有未认证频道);
+    #               "uncert" = 收紧版(仅当前无法定位、会走补测/归航的频道)。
+    OPP_TARGET = "spec"
 
     def __init__(self, client):
         self.c = client
@@ -425,6 +489,8 @@ class Problem3Robot:
         self.visited_no_signal = {ch: set() for ch in range(1, N_CH+1)}  # 记录无信号搜索点
         self.cleared_count = 0
         self.locate_diag = {}     # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
+        self._meas_seen = set()   # (坐标, 频道) 去重: 模块O 不重复测量同一频道的同一坐标
+        self.supp_channels = set()  # 进入过补测队列的频道(用于回填 avoided_supplement)
 
     # ---- 阶段标签 + 诊断记录(仅记录, 不改变任何决策) ----
     def _phase(self, name):
@@ -597,6 +663,8 @@ class Problem3Robot:
                           + math.hypot(Q[0]-nxt[0], Q[1]-nxt[1])
                           - math.hypot(cur[0]-nxt[0], cur[1]-nxt[1]))
                     if dL <= self.ON_WAY_DELTA:
+                        # 模块O: 即将停靠前预选机会频道(先清除、后顺带观测)
+                        sel = self._opp_select(Q[0], Q[1]) if self.OPP_MEASURE else []
                         ok, res = c.clear(Q[0], Q[1], c2)
                         self._note_clear(c2, Q[0], Q[1], "on_way:"+qsrc, qr, qa,
                                          res if ok else "rejected")
@@ -608,6 +676,8 @@ class Problem3Robot:
                         else:
                             self._homing_clear(c2, Q[0], Q[1], phase="on_way_homing",
                                                src="on_way:"+qsrc, omega_r=qr, cross_ang=qa)
+                        if sel and tuple(c.position) == (Q[0], Q[1]):
+                            self._opp_run(Q[0], Q[1], sel, "on_way")
                 self._phase("coverage")
 
         # 状态层: 排除判定(遍历完全部覆盖点且均无信号)
@@ -638,6 +708,7 @@ class Problem3Robot:
                        if self.DOP_PRESCREEN
                        else self._supplement_point(ch, c.position))
                 if sup is not None:
+                    self.supp_channels.add(ch)     # 模块O: 记录进入补测的频道(回填用)
                     supp_tasks.append((ch, sup[0], sup[1]))
 
         # 调度层: 批量补测 —— 全部补测点做开放路径最优排序后统一执行
@@ -684,7 +755,11 @@ class Problem3Robot:
             cur = (clear_tasks[k][1], clear_tasks[k][2])
             unvisited.discard(k)
         # 2-opt(任务级, 含开放路径尾段反转)
-        for (ch, x, y, src, omr, cra) in self._two_opt_tasks(ordered, c.position):
+        qseq = self._two_opt_tasks(ordered, c.position)
+        for i_task, (ch, x, y, src, omr, cra) in enumerate(qseq):
+            # 模块O: 到达前预选机会频道(下一任务频道用于减少切换)
+            next_ch = qseq[i_task+1][0] if i_task + 1 < len(qseq) else None
+            sel = self._opp_select(x, y, next_ch) if self.OPP_MEASURE else []
             ok, res = c.clear(x, y, ch)
             self._note_clear(ch, x, y, "queue:"+str(src), omr, cra,
                              res if ok else "rejected")
@@ -699,6 +774,11 @@ class Problem3Robot:
                 self._homing_clear(ch, x, y, phase="queue_homing", src="queue:"+str(src),
                                    omega_r=omr, cross_ang=cra)
                 self._phase("queue_clear")
+            # 先清除、后顺带观测; 仅当仍停留在该停靠点时才执行(绝不返回已离开的点)
+            if sel and tuple(c.position) == (x, y):
+                self._opp_run(x, y, sel, "queue_clear")
+
+        self._opp_finalize()
 
         # 退出前校验: 不应存在"既未清除、也未被排除"的频道
         unresolved = [ch for ch in range(1, N_CH+1)
@@ -730,14 +810,14 @@ class Problem3Robot:
         return self.cleared_count
 
     # ---- 快速定位(不移动): 可行域最小覆盖圆<=20m 或 最小二乘交会 ----
-    def _locate_quick(self, ch, tag=""):
-        """返回可清除点; 同时记录定位方式与 Ω(可行域最小覆盖圆)半径, 供诊断/消融。
+    def _locate_eval(self, ch):
+        """纯计算(不改状态/不记录日志): 返回 (诊断 dict, 可清除点或 None)。
 
         方式 'mec': Ω 最小覆盖圆半径 <= R_CLEAR(判定即清除);
         方式 'ls' : Ω 半径超限或可行域退化(顶点<3)时, 改用交会角最大的两条示向交会。
         """
         dirs = [(pos, th) for pos, th in self.bearings[ch]]
-        rec = {"ch": ch, "tag": tag, "n_dirs": len(dirs), "method": None,
+        rec = {"ch": ch, "n_dirs": len(dirs), "method": None,
                "omega_radius_m": None, "cross_angle_deg": None, "point": None}
         pt = None
         if len(dirs) >= 2:
@@ -768,6 +848,12 @@ class Problem3Robot:
                         pt = None
         if pt is not None:
             rec["point"] = [round(pt[0], 1), round(pt[1], 1)]
+        return rec, pt
+
+    def _locate_quick(self, ch, tag=""):
+        """定位并记录诊断(方式/Ω 半径/交会角), 返回可清除点或 None。"""
+        rec, pt = self._locate_eval(ch)
+        rec["tag"] = tag
         self._note_locate(rec)
         if tag:
             self.log(f"定位[{tag}] 频道 {ch}: 方式={rec['method']} "
@@ -817,6 +903,166 @@ class Problem3Robot:
             if hi - lo < 4.0:
                 return (x0 + mid*ux, y0 + mid*uy)
         return (x0 + (lo+hi)/2.0*ux, y0 + (lo+hi)/2.0*uy)
+
+    # ---- 模块O: 机会性顺带观测(清除停靠点兼作观测站, 默认关) ----
+    #  目标频道 C_opp = { state=found, 未清除, 未认证可清除, 且 (Ω>20m ∨ 示向<2 ∨ 最佳交会<30°) }
+    #  触发时机: 即将在清除点停靠时预选频道 -> 先完成原清除 -> 若仍在原地再执行顺带观测。
+    #  绝不返回已离开的停靠点; no_signal 只记录, 不裁剪可行域(保守)。
+    def _opp_hard(self, ch):
+        """判定频道是否属于机会集合; 是则返回 (诊断 dict, 代表位置)。"""
+        if self.state[ch] != "found" or self.near_pos[ch] is not None:
+            return None                      # 非 found / near 可直接清, 不需观测
+        rec, pt = self._locate_eval(ch)
+        if rec["method"] == "mec":
+            return None                      # 已认证可清除(Ω<=20m), 不再测
+        if self.OPP_TARGET == "uncert":
+            # 收紧版: 只对"当前根本定不了位"的频道(即会走补测/归航的那一群)
+            if rec["method"] is not None:
+                return None
+        hard = (rec["omega_radius_m"] is None or rec["omega_radius_m"] > R_CLEAR
+                or rec["n_dirs"] < 2
+                or (rec["cross_angle_deg"] is not None
+                    and rec["cross_angle_deg"] < 30.0))
+        if not hard:
+            return None
+        rep = pt
+        if rep is None and self.bearings[ch]:
+            (px, py), th = self.bearings[ch][0]
+            rep = (px + 500.0*math.cos(th*DEG), py + 500.0*math.sin(th*DEG))
+        if rep is None:
+            return None
+        return rec, rep
+
+    def _opp_pred_cross(self, ch, X, rep):
+        """预测在 X 处观测频道 ch 的最佳有效交会角(度)。
+
+        示向数>=2: 以代表位置为顶点, 计算 X 与各历史观测点的交会角;
+        示向数==1: 无交会角可言, 用"该示向线 与 P1->X 连线"的夹角作代理。
+        """
+        dirs = list(self.bearings[ch])
+        if len(dirs) >= 2:
+            best = 0.0
+            for (P, _th) in dirs:
+                a1 = math.atan2(rep[1]-P[1], rep[0]-P[0])
+                a2 = math.atan2(rep[1]-X[1], rep[0]-X[0])
+                a = math.degrees(abs(a1 - a2)) % 180.0
+                best = max(best, min(a, 180.0 - a))
+            return best
+        if len(dirs) == 1:
+            (P, th) = dirs[0]
+            a = math.degrees(math.atan2(X[1]-P[1], X[0]-P[0])) % 360.0
+            return crossing_angle(th, a)
+        return 0.0
+
+    def _opp_pred_radius(self, ch, X, poly, n_rep=6):
+        """预测观测后 Ω 的最小覆盖圆半径(对代表点取最坏), 用于"预计能否直接认证"。"""
+        if len(poly) < 3:
+            return None
+        step = max(1, len(poly)//n_rep)
+        worst = 0.0
+        for S in poly[::step]:
+            th = math.degrees(math.atan2(S[1]-X[1], S[0]-X[0])) % 360
+            p2 = poly
+            for n, c in wedge_halfplanes(X, th):
+                p2 = clip_polygon(p2, n, c)
+                if len(p2) < 3:
+                    return float("inf")
+            _ctr, r = minimal_enclosing_circle(p2)
+            if r is None:
+                return float("inf")
+            worst = max(worst, r)
+        return worst
+
+    def _opp_select(self, x, y, next_ch=None):
+        """在清除点 (x,y) 预选机会频道(纯计算, 不改状态)。"""
+        cands = []
+        for ch in range(1, N_CH+1):
+            hard = self._opp_hard(ch)
+            if hard is None:
+                continue
+            rec, rep = hard
+            dirs = self.bearings[ch]
+            sep = min([math.hypot(x-P[0], y-P[1]) for P, _ in dirs] or [1e9])
+            if sep < self.OPP_MIN_SEP_M:
+                continue                     # 与历史观测点太近: 几何冗余
+            cross = self._opp_pred_cross(ch, (x, y), rep)
+            if cross < self.OPP_MIN_CROSS_DEG:
+                continue
+            poly = feasible_region(dirs)
+            pred_r = self._opp_pred_radius(ch, (x, y), poly) if len(poly) >= 3 else None
+            certifiable = (pred_r is not None and pred_r <= R_CLEAR)
+            cur_r = rec["omega_radius_m"] if rec["omega_radius_m"] is not None else 1e9
+            sw = 0 if ch == self.c.channel else 1
+            if next_ch is not None and ch == next_ch:
+                sw -= 1                      # 下一任务正好用该频道: 无需切回
+            cands.append({"ch": ch, "cross_pred_deg": round(cross, 1),
+                          "mec_before": rec["omega_radius_m"], "dirs_before": rec["n_dirs"],
+                          "min_sep_m": round(sep, 1), "pred_radius_m": (None if pred_r is None
+                                                                        else round(pred_r, 1)),
+                          "predicted_certifiable": bool(certifiable),
+                          "switch_cost": sw, "cur_r": cur_r})
+        # 分层排序(确定性, 不引入权重): 预计可认证 > 交会角接近90° > Ω 半径大 > 基线长 > 切换少
+        cands.sort(key=lambda d: (d["predicted_certifiable"], -abs(d["cross_pred_deg"] - 90.0),
+                                  d["cur_r"], d["min_sep_m"], -d["switch_cost"]), reverse=True)
+        return cands[:self.OPP_MAX_PER_POINT]
+
+    def _opp_run(self, x, y, sel, site):
+        """执行预选频道的机会观测(先清除、后观测; 已在调用处保证仍在原地)。"""
+        if not sel:
+            return
+        # 降低切换次数: 当前频道优先, 下一任务频道放最后(不再切回)
+        sel = sorted(sel, key=lambda d: (0 if d["ch"] == self.c.channel else 1))
+        snap0 = {k: getattr(self.c, k, None)
+                 for k in ("dist", "n_measure", "n_switch", "n_clear", "n_clear_ok")}
+        for d in sel:
+            ch = d["ch"]
+            if (round(x, 1), round(y, 1), ch) in self._meas_seen:
+                d["result"] = "skipped_dup"
+                continue
+            before_dirs = len(self.bearings[ch])
+            ok, res, svd = self.c.measure(x, y, ch)
+            self._meas_seen.add((round(x, 1), round(y, 1), ch))
+            if not ok:
+                d["result"] = "rejected"
+                continue
+            d["result"] = res
+            if res in ("direction", "near"):
+                if res == "direction":
+                    self.bearings[ch].append(((x, y), svd))
+                else:
+                    self.near_pos[ch] = (x, y)
+                rec2, _pt = self._locate_eval(ch)
+                d["mec_after"] = rec2["omega_radius_m"]
+                d["dirs_after"] = rec2["n_dirs"]
+                d["cross_actual_deg"] = rec2["cross_angle_deg"]
+                d["became_certified"] = bool(rec2["method"] == "mec")
+            else:
+                # no_signal: 只记录(保守, 不裁剪可行域、不改状态)
+                d["mec_after"] = d["mec_before"]
+                d["dirs_after"] = before_dirs
+                d["became_certified"] = False
+            d.setdefault("cross_actual_deg", None)
+            d["site"] = site
+            d["point"] = [round(x, 1), round(y, 1)]
+            d["phase"] = getattr(self.c, "phase", None)
+            snap1 = {k: getattr(self.c, k, None) for k in snap0}
+            d["switch_count"] = ((snap1["n_switch"] - snap0["n_switch"])
+                                 if isinstance(snap0["n_switch"], (int, float)) else None)
+            d["time_cost"] = (round((snap1["dist"]-snap0["dist"])/5.0
+                                    + (snap1["n_measure"]-snap0["n_measure"])*5.0
+                                    + (snap1["n_switch"]-snap0["n_switch"])*1.0, 1)
+                              if isinstance(snap0["dist"], (int, float)) else None)
+            d["avoided_supplement"] = None   # 反事实字段, 由 run() 结束时回填(见 _opp_finalize)
+            self._diag_list(self.c, "opp_diag").append(d)
+        self.log(f"机会观测[{site}] @ ({x:.0f},{y:.0f}): "
+                 + ", ".join(f"{d['ch']}({d.get('result')})" for d in sel))
+
+    def _opp_finalize(self):
+        """回填 avoided_supplement: 该频道此后未再进入补测队列则记为 True(可观测代理量)。"""
+        for d in self._diag_list(self.c, "opp_diag"):
+            ch = d.get("ch")
+            d["avoided_supplement"] = bool(d.get("became_certified")
+                                           and ch not in self.supp_channels)
 
     # ---- 开放路径最优顺序: n<=9 全排列精确, 否则最近邻 ----
     @staticmethod
