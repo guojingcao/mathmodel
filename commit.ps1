@@ -9,7 +9,8 @@ param(
     [switch]$NoPush
 )
 
-$ErrorActionPreference = "Stop"
+# git 会把进度写到 stderr, 不能让 PowerShell 当成终止错误
+$ErrorActionPreference = "Continue"
 Set-Location -Path $PSScriptRoot
 
 # 1) 暂存(遵循 .gitignore, 大数据目录与 logs 不入库)
@@ -23,24 +24,26 @@ if (-not $changed) {
     Write-Host "[commit] 本次改动文件:" -ForegroundColor Cyan
     $changed | ForEach-Object { Write-Host "  $_" }
     git commit -q -m $Message
-    Write-Host ("[commit] 已提交: " + (git rev-parse --short HEAD) + "  " + $Message) -ForegroundColor Green
+    $hash = (git rev-parse --short HEAD)
+    Write-Host "[commit] 已提交: $hash  $Message" -ForegroundColor Green
 }
 
 # 3) 推送到远程(默认执行)
-if (-not $NoPush) {
-    $remotes = git remote
-    if ($remotes) {
-        git push 2>&1 | ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "[push] 已推送到 origin/main" -ForegroundColor Green
-        } else {
-            Write-Host "[push] 推送失败, 请检查网络/SSH 密钥/仓库权限" -ForegroundColor Red
-        }
-    } else {
-        Write-Host "[push] 未配置远程仓库, 跳过。" -ForegroundColor Yellow
-    }
-} else {
+if ($NoPush) {
     Write-Host "[commit] (按 -NoPush 跳过推送)" -ForegroundColor DarkGray
+} else {
+    $remotes = git remote
+    if (-not $remotes) {
+        Write-Host "[push] 未配置远程仓库, 跳过。" -ForegroundColor Yellow
+    } else {
+        Write-Host "[push] 推送到 origin ..." -ForegroundColor Cyan
+        git push 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[push] 成功: origin/main 已同步" -ForegroundColor Green
+        } else {
+            Write-Host "[push] 失败(退出码 $LASTEXITCODE), 请检查网络/SSH 密钥/仓库权限" -ForegroundColor Red
+        }
+    }
 }
 
 # 4) 显示最近提交, 便于回退
