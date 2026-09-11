@@ -231,6 +231,26 @@ def polygon_diameter(verts):
             best = d
     return best
 
+def _wedge_vertices(P, t1, Q, t2, eps=1.0):
+    """两点两示向(各 ±eps°)的 4 条边界线两两交点(用于最坏定位直径评价)。"""
+    lines = []
+    for S, t in ((P, t1), (Q, t2)):
+        for e in (+eps, -eps):
+            a = (t + e) * DEG
+            lines.append(((math.cos(a), math.sin(a)), S))
+    verts = []
+    for i in range(len(lines)):
+        for j in range(i+1, len(lines)):
+            d1, S1 = lines[i]; d2, S2 = lines[j]
+            det = d1[0]*(-d2[1]) - (-d2[0])*d1[1]
+            if abs(det) < 1e-12:
+                continue
+            rx, ry = S2[0]-S1[0], S2[1]-S1[1]
+            u = (rx*(-d2[1]) - (-d2[0])*ry) / det
+            verts.append((S1[0] + u*d1[0], S1[1] + u*d1[1]))
+    return verts
+
+
 def bearing_intersection(stations, bearings_deg):
     """多站示向度最小二乘交会(点估计)。"""
     A00 = A01 = A11 = b0 = b1 = 0.0
@@ -290,6 +310,9 @@ class Problem3Robot:
     # 受限顺路清除阈值(米): None=关闭; 数值=仅在插入增量 ΔL<=该值时才顺路清除。
     # 实测最优 δ≈300m(1000案例扫描 200/300/500/800/1200: 300 最优, 更大反而回归)。
     ON_WAY_DELTA = 300.0
+    # ===== 外部改进模块开关(默认关, 用于消融实验) =====
+    ORDER_BY_PROB = False    # 模块A: 贝叶斯概率图给覆盖点排访问顺序(替代固定六边形顺序)
+    DOP_PRESCREEN = False    # 模块B: DOP(交会角)预筛候选补测点, 再按极小极大+路程择优
 
     def __init__(self, client):
         self.c = client
@@ -312,6 +335,78 @@ class Problem3Robot:
     def log(self, *a):
         print("[robot]", *a, flush=True)
 
+    # ---- 模块A: 贝叶斯概率图 -> 覆盖点访问顺序 ----
+    # 纯信息增益排序会忽略路程(实测路径 18.7km -> 22.7km), 故加入路程惩罚项。
+    PROB_TRAVEL_W = 0.05     # 路程惩罚权重(米 -> 等价信息增益单位)
+
+    @classmethod
+    def _prob_order(cls, stations, n_grid=16):
+        """用"信息增益 − 路程惩罚"给覆盖点排序(贪心)。
+
+        均匀先验下, 一个点的信息增益 ∝ 其 1000m 接收圆盘新覆盖的目标区面积。
+        按《汇总版》要求: 只调整访问次序, 不删除任何保证覆盖点, 不改变终止条件。
+        """
+        cells = []
+        for i in range(n_grid):
+            for j in range(n_grid):
+                x = -R_AREA + (2*R_AREA) * i / (n_grid - 1)
+                y = -R_AREA + (2*R_AREA) * j / (n_grid - 1)
+                if math.hypot(x, y) <= R_AREA:
+                    cells.append((x, y))
+        unvisited = list(stations)
+        order = []
+        covered = [False] * len(cells)
+        cur = (0.0, 0.0)
+        while unvisited:
+            best_i, best_score = 0, -float("inf")
+            for i, p in enumerate(unvisited):
+                gain = 0
+                for k, c in enumerate(cells):
+                    if not covered[k] and math.hypot(c[0]-p[0], c[1]-p[1]) <= R_GUARANTEE:
+                        gain += 1
+                score = gain - cls.PROB_TRAVEL_W * math.hypot(p[0]-cur[0], p[1]-cur[1])
+                if score > best_score:
+                    best_score, best_i = score, i
+            p = unvisited.pop(best_i)
+            order.append(p); cur = p
+            for k, c in enumerate(cells):
+                if math.hypot(c[0]-p[0], c[1]-p[1]) <= R_GUARANTEE:
+                    covered[k] = True
+        return order
+
+    # ---- 模块B: DOP(交会角)预筛 + 极小极大/路程择优的补测点 ----
+    def _dop_supplement_point(self, ch, toward):
+        """在首示向垂线附近生成候选, 用交会角(DOP)预筛, 再按最坏定位直径+路程择优。"""
+        dirs = [(p, t) for p, t in self.bearings[ch]]
+        if not dirs:
+            return None
+        (x0, y0), th0 = dirs[0]
+        cands = []
+        for off in (60.0, 90.0, 120.0, -60.0, -90.0, -120.0):
+            for d in (300.0, 500.0, 700.0):
+                a = (th0 + off) * DEG
+                cands.append((x0 + d*math.cos(a), y0 + d*math.sin(a)))
+        # 1) DOP 预筛: 与首示向的交会角 >= 30° 才保留(方向退化点先删掉)
+        cands = [q for q in cands
+                 if crossing_angle(math.degrees(math.atan2(q[1]-y0, q[0]-x0)), th0) >= 30.0]
+        if not cands:
+            return None
+        # 2) 极小极大: 用两站楔形交的最坏直径评价(离散源距离)
+        best, best_key = None, (float("inf"), float("inf"))
+        for q in cands:
+            worst = 0.0
+            for rr in (100.0, 500.0, 900.0, 1300.0, 1500.0):
+                g = (x0 + rr*math.cos(th0*DEG), y0 + rr*math.sin(th0*DEG))
+                t2 = math.degrees(math.atan2(g[1]-q[1], g[0]-q[0])) % 360
+                v = _wedge_vertices((x0, y0), th0, q, t2)
+                if len(v) >= 2:
+                    worst = max(worst, max(math.hypot(p1[0]-p2[0], p1[1]-p2[1])
+                                           for p1 in v for p2 in v))
+            key = (worst, math.hypot(q[0]-toward[0], q[1]-toward[1]))
+            if key < best_key:
+                best_key, best = key, q
+        return best
+
     # ---- 主流程: 保证层(覆盖) + 状态层(可行域) + 调度层(事件驱动任务队列) ----
     def run(self):
         c = self.c
@@ -320,6 +415,10 @@ class Problem3Robot:
         self.log(f"进入成功, 剩余现实时间 {c.remaining_real}s")
 
         pts = self.search_points()
+        if self.ORDER_BY_PROB:
+            pts = self._prob_order(pts)   # 模块A: 概率图(信息增益)排序访问顺序
+            self.log("覆盖点访问顺序(概率图排序): " +
+                     " -> ".join("(%.0f,%.0f)" % p for p in pts))
 
         # 保证层: 依次访问 7 个覆盖点, 蛇形扫描(发现 + 免费交会)
         for i, (px, py) in enumerate(pts):
@@ -389,7 +488,9 @@ class Problem3Robot:
             if pt is not None:
                 clear_tasks.append((ch, pt[0], pt[1]))
             else:
-                sup = self._supplement_point(ch, c.position)
+                sup = (self._dop_supplement_point(ch, c.position)
+                       if self.DOP_PRESCREEN
+                       else self._supplement_point(ch, c.position))
                 if sup is not None:
                     supp_tasks.append((ch, sup[0], sup[1]))
 
