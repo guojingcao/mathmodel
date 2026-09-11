@@ -1,13 +1,12 @@
-﻿# 代码改动一键提交脚本
+﻿# 代码改动一键提交并推送脚本
 # 用法:
-#   .\commit.ps1 "本次改动说明"
-#   .\commit.ps1 "本次改动说明" -Push
+#   .\commit.ps1 "本次改动说明"              # 提交 + 推送(默认)
+#   .\commit.ps1 "本次改动说明" -NoPush      # 只本地提交, 不推送
 #
 # 说明: 每次改写代码后运行, 便于出 bug 时回退。
-#       未配置远程仓库时只做本地提交; 配置后加 -Push 会推送。
 param(
     [Parameter(Mandatory = $true)][string]$Message,
-    [switch]$Push
+    [switch]$NoPush
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,28 +19,28 @@ git add -A
 $changed = git diff --cached --name-only
 if (-not $changed) {
     Write-Host "[commit] 没有需要提交的改动。" -ForegroundColor Yellow
-    exit 0
+} else {
+    Write-Host "[commit] 本次改动文件:" -ForegroundColor Cyan
+    $changed | ForEach-Object { Write-Host "  $_" }
+    git commit -q -m $Message
+    Write-Host ("[commit] 已提交: " + (git rev-parse --short HEAD) + "  " + $Message) -ForegroundColor Green
 }
-Write-Host "[commit] 本次改动文件:" -ForegroundColor Cyan
-$changed | ForEach-Object { Write-Host "  $_" }
 
-git commit -q -m $Message
-$hash = (git rev-parse --short HEAD)
-Write-Host "[commit] 已提交: $hash  $Message" -ForegroundColor Green
-
-# 3) 可选推送
-$remotes = git remote
-if ($Push) {
+# 3) 推送到远程(默认执行)
+if (-not $NoPush) {
+    $remotes = git remote
     if ($remotes) {
-        git push
-        Write-Host "[commit] 已推送到远程。" -ForegroundColor Green
+        git push 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[push] 已推送到 origin/main" -ForegroundColor Green
+        } else {
+            Write-Host "[push] 推送失败, 请检查网络/SSH 密钥/仓库权限" -ForegroundColor Red
+        }
     } else {
-        Write-Host "[commit] 未配置远程仓库, 无法推送。" -ForegroundColor Yellow
-        Write-Host "         配置示例: git remote add origin <仓库URL>" -ForegroundColor Yellow
-        Write-Host "                   git push -u origin main" -ForegroundColor Yellow
+        Write-Host "[push] 未配置远程仓库, 跳过。" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "[commit] (未推送; 需要时加 -Push)" -ForegroundColor DarkGray
+    Write-Host "[commit] (按 -NoPush 跳过推送)" -ForegroundColor DarkGray
 }
 
 # 4) 显示最近提交, 便于回退
