@@ -87,24 +87,34 @@ def run_neighbor(rings, n=30, seed=3026, ratios=(0.5, 1.0)):
 
 
 def _ep_stats(rows, key):
-    """从逐案例的 episode 明细汇总邻域/换示向指标。"""
+    """从逐案例的 episode 明细汇总邻域/换示向指标(邻域按圈半径分别统计)。"""
     eps = [e for r in rows for e in r["homing"]]
     cd = [d for r in rows for d in r["cdiag"]]
-    ring_att = sum(1 for d in cd if "邻域" in str(d.get("src")) and d.get("result") != "rejected")
-    ring_ok = sum(1 for d in cd if "邻域" in str(d.get("src")) and d.get("result") == "success")
+    ring = {}
+    for d in cd:
+        s = str(d.get("src"))
+        if "邻域" not in s or d.get("result") == "rejected":
+            continue
+        tag = s.split("|")[-1]                     # 例: 邻域8m / 邻域15m
+        a = ring.setdefault(tag, [0, 0])
+        a[0] += 1
+        a[1] += 1 if d.get("result") == "success" else 0
+    ring_att = sum(v[0] for v in ring.values())
+    ring_ok = sum(v[1] for v in ring.values())
     by = {}
     for e in eps:
         if e.get("cleared_by"):
             by[e["cleared_by"]] = by.get(e["cleared_by"], 0) + 1
+    ring_src = sum(v for k, v in by.items() if str(k).startswith("邻域"))
     multi = [e for e in eps if e.get("bearings_tried", 0) > 1]
     later = [e for e in multi if (e.get("cleared_at_bearing") or 0) > 0]
     hard = [e for e in eps if e.get("cleared_by")]
     n_cases = len(rows)
     return dict(
-        episodes=len(eps), cleared_by=by,
+        episodes=len(eps), cleared_by=by, ring=ring,
         ring_att=ring_att, ring_ok=ring_ok,
         ring_rate=(ring_ok/ring_att if ring_att else None),
-        ring_cond=(by.get("邻域", 0)/len(eps) if eps else None),
+        ring_cond=(ring_src/len(eps) if eps else None),
         multi=len(multi), later=len(later),
         later_rate=(len(later)/len(multi) if multi else None),
         ep_moves=(np.mean([e.get("episode_moves_m", 0.0) for e in hard]) if hard else 0.0),
@@ -155,6 +165,9 @@ def paired_neighbor(n=100, seed=3026):
                 name, e["episodes"], e["ring_att"], e["ring_ok"],
                 f"{e['ring_rate']*100:.1f}%" if e["ring_rate"] is not None else "—",
                 f"{e['ring_cond']*100:.1f}%" if e["ring_cond"] is not None else "—"))
+            print("%-34s%s" % ("", "  按圈: " + ("; ".join(
+                f"{k} 尝试{v[0]} 成功{v[1]} ({100.0*v[1]/v[0]:.1f}%)"
+                for k, v in sorted(e["ring"].items())) if e["ring"] else "无邻域尝试")))
         print("%-34s%10s%10s%10s%10s" % ("", "换示向例", "补回例", "补回比例", "清除来源"))
         for name, _ in arms:
             e = _ep_stats(res[name][pd], name)

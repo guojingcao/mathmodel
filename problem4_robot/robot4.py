@@ -786,11 +786,11 @@ class Problem4Robot:
                     a = k * 60 * DEG
                     q = (bt[0] + rad*math.cos(a), bt[1] + rad*math.sin(a))
                     ok2, rc2 = self.c.clear(q[0], q[1], ch)
-                    self._note_clear(ch, q[0], q[1], src+"|邻域", omega_r, cross_ang,
-                                     rc2 if ok2 else "rejected")
+                    self._note_clear(ch, q[0], q[1], f"{src}|邻域{rad:.0f}m", omega_r,
+                                     cross_ang, rc2 if ok2 else "rejected")
                     if ok2 and rc2 == "success":
                         self.state[ch] = "cleared"; self.cleared_count += 1
-                        return done("邻域", bi)
+                        return done(f"邻域{rad:.0f}m", bi)
         self._close_episode(ep, snap0)
         return False
 
