@@ -44,10 +44,9 @@ def run_cfg(neg, pso, verify, n=8, ratios=(0.5, 1.0), seed=3026):
     r4.Problem4Robot.DO_VERIFY = verify
     out = {}
     for pd in ratios:
-        rng = np.random.default_rng(seed)
         crs = []; Ls = []; ms = []; fs = []; Ts = []
-        for _ in range(n):
-            env = exp.Env(rng, directional=True, p_dir=pd)
+        for ci in range(n):
+            env = case_env(seed, ci, directional=True, p_dir=pd)
             cli = MockClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
                 k = rb.run()
@@ -55,6 +54,15 @@ def run_cfg(neg, pso, verify, n=8, ratios=(0.5, 1.0), seed=3026):
             Ts.append(cli.dist/5 + cli.n_measure*5)
         out[pd] = (np.mean(crs), np.mean(Ls), np.mean(ms), float(np.mean(fs)), np.mean(Ts))
     return out
+
+
+def case_env(seed, k, **kw):
+    """按(seed, 案例编号)独立派生场景随机源。
+
+    exp.Env 用同一个 rng 既生成场景、又在每次 measure 抽 ±1° 噪声; 若各臂共用一个 rng,
+    臂间测量次数不同就会错开随机流 -> 同一编号在不同臂下是不同场景, 配对失效。
+    """
+    return exp.Env(np.random.default_rng([int(seed), int(k)]), **kw)
 
 
 def run_neighbor(rings, n=30, seed=3026, ratios=(0.5, 1.0)):
@@ -66,10 +74,9 @@ def run_neighbor(rings, n=30, seed=3026, ratios=(0.5, 1.0)):
     r4.Problem4Robot.NEIGHBOR_RINGS = tuple(rings)
     out = {}
     for pd in ratios:
-        rng = np.random.default_rng(seed)
         rows = []
-        for _ in range(n):
-            env = exp.Env(rng, directional=True, p_dir=pd)
+        for ci in range(n):
+            env = case_env(seed, ci, directional=True, p_dir=pd)
             cli = MockClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
                 k = rb.run()
@@ -193,10 +200,9 @@ def run_supp_cap(cap, n=400, seed=3026, ratios=(0.5, 1.0)):
     r4.Problem4Robot.SUPP_MAX_DIST = cap
     out = {}
     for pd in ratios:
-        rng = np.random.default_rng(seed)
         rows = []
-        for _ in range(n):
-            env = exp.Env(rng, directional=True, p_dir=pd)
+        for ci in range(n):
+            env = case_env(seed, ci, directional=True, p_dir=pd)
             cli = MockClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
                 k = rb.run()
@@ -282,10 +288,9 @@ def run_onway(delta, n=30, seed=3026, ratios=(0.5, 1.0)):
     r4.ON_WAY_DELTA = delta            # 模块级常量, run() 在调用时读取
     out = {}
     for pd in ratios:
-        rng = np.random.default_rng(seed)
         rows = []
-        for _ in range(n):
-            env = exp.Env(rng, directional=True, p_dir=pd)
+        for ci in range(n):
+            env = case_env(seed, ci, directional=True, p_dir=pd)
             cli = MockClient(env); rb = r4.Problem4Robot(cli)
             with contextlib.redirect_stdout(io.StringIO()):
                 k = rb.run()

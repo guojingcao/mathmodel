@@ -48,6 +48,16 @@ class MockClient:
     def exit(self): pass
 
 
+def case_env(seed, k, **kw):
+    """按(seed, 案例编号)独立派生场景随机源。
+
+    必须这样做: exp.Env 用同一个 rng 既生成场景、又在每次 measure 抽 ±1° 噪声,
+    若各臂共用一个 rng, 臂间测量次数不同就会错开随机流 -> 同一编号在不同臂下是
+    **不同场景**, 逐案例配对失效。按编号派生后, 各臂面对完全相同的场景。
+    """
+    return exp.Env(np.random.default_rng([int(seed), int(k)]), **kw)
+
+
 def run_opp(opp_on, max_per_point=2, target="spec", n=400, seed=2026, paired=False):
     """模块O(机会性顺带观测)消融: 同一批随机案例(同 seed)下跑一种配置。
 
@@ -57,10 +67,9 @@ def run_opp(opp_on, max_per_point=2, target="spec", n=400, seed=2026, paired=Fal
     rb.Problem3Robot.OPP_MEASURE = opp_on
     rb.Problem3Robot.OPP_MAX_PER_POINT = max_per_point
     rb.Problem3Robot.OPP_TARGET = target
-    rng = np.random.default_rng(seed)
     rows = []
-    for _ in range(n):
-        env = exp.Env(rng, directional=False)
+    for k in range(n):
+        env = case_env(seed, k, directional=False)
         cli = MockClient(env); robot = rb.Problem3Robot(cli)
         with contextlib.redirect_stdout(io.StringIO()):
             k = robot.run()
@@ -149,6 +158,137 @@ def paired_opp(n=400, seed=2026):
     return res
 
 
+def run_reuse(reuse=False, gate=2000.0, saving=100.0, opp=False, opp_max=1,
+              delete_mode="cert", n=300, seed=2026, paired=False):
+    """模块R(补测点复用)配置运行: 逐案例返回时间与机制明细。"""
+    rb.Problem3Robot.SUPP_REUSE = reuse
+    rb.Problem3Robot.SUPP_REUSE_ROUTE_GATE_M = gate
+    rb.Problem3Robot.SUPP_REUSE_MIN_SAVING_M = saving
+    rb.Problem3Robot.SUPP_REUSE_DELETE_MODE = delete_mode
+    rb.Problem3Robot.OPP_MEASURE = opp
+    rb.Problem3Robot.OPP_MAX_PER_POINT = opp_max
+    rng = np.random.default_rng(seed)
+    rows = []
+    for k in range(n):
+        env = case_env(seed, k, directional=False)
+        cli = MockClient(env); robot = rb.Problem3Robot(cli)
+        with contextlib.redirect_stdout(io.StringIO()):
+            k_cleared = robot.run()
+        T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
+             + cli.n_clear_ok*5 + cli.fail*3)
+        rd = list(getattr(cli, "reuse_diag", []))
+        at = [x for x in rd if x.get("kind") != "gate"]
+        rem = [x for x in at if x.get("removed")]
+        ph = getattr(cli, "ph", {})
+        st = ph.get("supplement", [0.0, 0, 0])
+        od = list(getattr(cli, "opp_diag", []))
+        rows.append(dict(
+            cr=k_cleared/env.n_src, miss=1 if k_cleared < env.n_src else 0, n_src=env.n_src,
+            T=T, dist=cli.dist, meas=cli.n_measure, sw=cli.n_switch, fail=cli.fail,
+            supp_t=st[0]/5 + st[1]*5,
+            gate=sum(1 for x in rd if x.get("kind") == "gate" and x.get("armed")),
+            attempts=len(at), signals=sum(1 for x in at
+                                          if x.get("result") in ("direction", "near")),
+            removed=len(rem),
+            save_pred=sum(x.get("saving_m") or 0.0 for x in rem),
+            save_actual=sum(x.get("route_saving_actual_m") or 0.0 for x in rem),
+            extra_t=sum(x.get("time_cost") or 0.0 for x in at),
+            opp_attempts=len(od),
+        ))
+    return rows
+
+
+def _split_stats(rows, base, idx=None):
+    sel = list(range(len(rows))) if idx is None else idx
+    T = np.array([rows[i]["T"] for i in sel])
+    d = T - np.array([base[i]["T"] for i in sel])
+    se = d.std(ddof=1)/math.sqrt(len(d)) if len(d) > 1 else 0.0
+    return dict(cr=np.mean([rows[i]["cr"] for i in sel]),
+                miss=sum(rows[i]["miss"] for i in sel), T=T.mean(),
+                dm=d.mean(), lo=d.mean()-1.96*se, hi=d.mean()+1.96*se,
+                win=float((d < 0).mean()), med=float(np.median(d)),
+                p10=float(np.percentile(d, 10)), p90=float(np.percentile(d, 90)),
+                attempts=sum(rows[i]["attempts"] for i in sel)/len(sel),
+                signals=sum(rows[i]["signals"] for i in sel)/len(sel),
+                removed=sum(rows[i]["removed"] for i in sel)/len(sel),
+                save_a=sum(rows[i]["save_actual"] for i in sel)/len(sel),
+                extra=sum(rows[i]["extra_t"] for i in sel)/len(sel),
+                fail=np.mean([rows[i]["fail"] for i in sel]),
+                supp_t=np.mean([rows[i]["supp_t"] for i in sel]))
+
+
+def train_scan_reuse(n=300, seed=111):
+    """训练集: 扫描全局门控 D0 与局部删除收益门控 S0(不用实机日志选阈值)。"""
+    print(f"[训练集] 扫描 D0 x S0  (n={n}/格, seed={seed}; 训练集与验证集种子不同)")
+    print("%-10s%10s%11s%11s%9s%10s%11s%11s" % ("D0(m)", "S0(m)", "平均(s)", "vs基线(s)",
+                                                "变快比", "删除任务", "省路(m)", "额外成本s"))
+    base = run_reuse(False, None, 0.0, False, n=n, seed=seed)
+    T0 = np.array([r["T"] for r in base])
+    best = None
+    for D0 in (1500.0, 2000.0, 2500.0, 3000.0, 3500.0):
+        for S0 in (0.0, 50.0, 100.0, 200.0, 300.0):
+            rows = run_reuse(True, D0, S0, False, n=n, seed=seed)
+            s = _split_stats(rows, base)
+            print("%-10.0f%10.0f%11.0f%+11.1f%9.0f%%%10.2f%11.0f%11.1f" % (
+                D0, S0, s["T"], s["dm"], s["win"]*100, s["removed"], s["save_a"], s["extra"]))
+            if best is None or s["dm"] < best[0]:
+                best = (s["dm"], D0, S0, s)
+    print(f"\n训练集最优: D0={best[1]:.0f} m, S0={best[2]:.0f} m  (Δ={best[0]:+.1f} s, "
+          f"删除 {best[3]['removed']:.2f} 个/例, 额外成本 {best[3]['extra']:.1f} s/例)")
+    rb.Problem3Robot.SUPP_REUSE = False
+    return best[1], best[2]
+
+
+def validate_reuse(d0, s0, n=800, seed=20260711):
+    """验证集(独立种子): C0 基线 / C1 仅全局门控 / C2 双门控(仅认证删除) /
+    C2L 双门控但认证或 LS 即删(激进删除) / C3 C2+清除点自然触发观测。"""
+    print(f"\n[验证集] D0={d0:.0f} m, S0={s0:.0f} m, n={n}/臂, seed={seed}(独立)")
+    arms = [("C0 基线(全关)", dict(reuse=False, gate=None, saving=0.0, opp=False)),
+            ("C1 仅全局门控", dict(reuse=True, gate=d0, saving=0.0, opp=False)),
+            ("C2 双门控(仅认证删)", dict(reuse=True, gate=d0, saving=s0, opp=False)),
+            ("C2L 双门控(认证或LS删)", dict(reuse=True, gate=d0, saving=s0, opp=False,
+                                       delete_mode="cert_or_ls")),
+            ("C3 C2+清除点观测", dict(reuse=True, gate=d0, saving=s0, opp=True, opp_max=1))]
+    res = {}
+    for name, kw in arms:
+        t0 = time.time()
+        res[name] = run_reuse(n=n, seed=seed, **kw)
+        print(f"  已跑 {name}  [{time.time()-t0:.0f}s]", flush=True)
+    base = res[arms[0][0]]
+    hard = [i for i, r in enumerate(base) if r["supp_t"] > 600.0]
+    easy = [i for i, r in enumerate(base) if r["supp_t"] <= 600.0]
+    for label, idx in (("全部案例", None), (f"困难子集({len(hard)}例)", hard),
+                       (f"容易子集({len(easy)}例)", easy)):
+        print(f"\n=== {label} ===")
+        print("%-22s%8s%6s%9s%10s%13s%8s%9s%10s" % (
+            "配置", "全清率", "漏清", "平均(s)", "Δ时间(s)", "Δ95%CI", "变快比",
+            "中位差", "P10/P90差"))
+        for name, _ in arms:
+            s = _split_stats(res[name], base, idx)
+            print("%-22s%7.1f%%%6d%9.0f%+10.1f%13s%7.0f%%%9.0f%10s" % (
+                name, s["cr"]*100, s["miss"], s["T"], s["dm"],
+                f"[{s['lo']:.0f},{s['hi']:.0f}]", s["win"]*100, s["med"],
+                f"{s['p10']:.0f}/{s['p90']:.0f}"))
+        print("%-22s%10s%10s%10s%10s%11s%11s%9s%9s" % (
+            "", "复用尝试", "有信号", "删除任务", "省路(m)", "额外成本s", "补测阶段s",
+            "η_remove", "失败清除"))
+        for name, _ in arms:
+            s = _split_stats(res[name], base, idx)
+            eta = (s["removed"]/s["attempts"]) if s["attempts"] else 0.0
+            print("%-22s%10.2f%10.2f%10.2f%10.0f%11.1f%11.0f%9s%9.2f" % (
+                name, s["attempts"], s["signals"], s["removed"], s["save_a"],
+                s["extra"], s["supp_t"], f"{eta*100:.0f}%" if s["attempts"] else "—",
+                s["fail"]))
+    for name, _ in arms[1:]:
+        s = _split_stats(res[name], base)
+        s2 = _split_stats(res[name], base, hard)
+        print(f"\nη_T {name}: 全案例 {(-s['dm']/s['attempts']) if s['attempts'] else 0:+.1f} s/次 "
+              f"; 困难子集 {(-s2['dm']/s2['attempts']) if s2['attempts'] else 0:+.1f} s/次")
+    rb.Problem3Robot.SUPP_REUSE = False
+    rb.Problem3Robot.OPP_MEASURE = False
+    return res
+
+
 def run_cfg(order_prob, dop, on_way, n=300, seed=2026, ls_gate=None, paired=False):
     rb.Problem3Robot.ORDER_BY_PROB = order_prob
     rb.Problem3Robot.DOP_PRESCREEN = dop
@@ -156,8 +296,8 @@ def run_cfg(order_prob, dop, on_way, n=300, seed=2026, ls_gate=None, paired=Fals
     rb.Problem3Robot.LS_CLEAR_GATE = ls_gate
     rng = np.random.default_rng(seed)
     crs = []; Ls = []; ms = []; fs = []; Ts = []; per_case = []
-    for _ in range(n):
-        env = exp.Env(rng, directional=False)      # 同一 seed -> 各配置面对完全相同的案例(配对)
+    for k in range(n):
+        env = case_env(seed, k, directional=False)   # 同一 seed -> 各配置面对完全相同的案例(配对)
         cli = MockClient(env); robot = rb.Problem3Robot(cli)
         with contextlib.redirect_stdout(io.StringIO()):
             k = robot.run()
@@ -205,6 +345,11 @@ def paired_ls_gate(n=300, seed=2026):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--reuse":
+        N = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+        d0, s0 = train_scan_reuse(N)
+        validate_reuse(d0, s0, max(400, N))
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] == "--opp":
         paired_opp(int(sys.argv[2]) if len(sys.argv) > 2 else 400)
         sys.exit(0)

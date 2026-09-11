@@ -60,6 +60,7 @@ class SimClient:
         self.locate_history = []    # 机器人回填: 每次定位的 方式/Ω半径/交会角
         self.clear_diag = []        # 机器人回填: 每次清除的 定位来源/Ω半径/结果
         self.opp_diag = []          # 机器人回填: 模块O 逐次机会观测明细
+        self.reuse_diag = []        # 机器人回填: 模块R 补测点复用明细(含门控记录)
         # 计数(供机会观测动作成本归因; 与离线 MockClient 同名同义)
         self.dist = 0.0
         self.n_measure = 0
@@ -186,11 +187,43 @@ class SimClient:
             "clear_diag": self.clear_diag,              # 逐次清除的定位来源+Ω 半径(诊断)
             "opp_stats": self._opp_stats(),             # 模块O 机会观测汇总
             "opp_diag": self.opp_diag,                  # 模块O 逐次机会观测明细
+            "reuse_stats": self._reuse_stats(),         # 模块R 补测点复用汇总
+            "reuse_diag": self.reuse_diag,              # 模块R 明细(含门控记录)
             "robot": self.meta,
         }
         if self.error:
             s["error"] = self.error
         return s
+
+    def _reuse_stats(self):
+        """模块R 汇总: 门控触发、复用尝试、任务删除效率、路线节省、额外成本。"""
+        d = [x for x in self.reuse_diag if x.get("kind") != "gate"]
+        gates = [x for x in self.reuse_diag if x.get("kind") == "gate"]
+        out = {"enabled": getattr(Problem3Robot, "SUPP_REUSE", None),
+               "route_gate_m": getattr(Problem3Robot, "SUPP_REUSE_ROUTE_GATE_M", None),
+               "min_saving_m": getattr(Problem3Robot, "SUPP_REUSE_MIN_SAVING_M", None),
+               "gates": len(gates),
+               "route_gate_triggered": sum(1 for g in gates if g.get("armed")),
+               "route_len_m": [g.get("route_len_m") for g in gates],
+               "opp_supp_attempts": len(d)}
+        if not d:
+            return out
+        sig = [x for x in d if x.get("result") in ("direction", "near")]
+        rem = [x for x in d if x.get("removed")]
+        out.update({
+            "opp_signal_count": len(sig),
+            "signal_rate": round(len(sig)/len(d), 4),
+            "supp_tasks_removed": len(rem),
+            "remove_efficiency": round(len(rem)/len(d), 4),
+            "remove_reasons": {k: sum(1 for x in d if x.get("remove_reason") == k)
+                               for k in sorted({x.get("remove_reason") for x in d
+                                                if x.get("remove_reason")})},
+            "route_saving_pred_m": round(sum(x.get("saving_m") or 0.0 for x in rem), 1),
+            "route_saving_actual_m": round(sum(x.get("route_saving_actual_m") or 0.0
+                                               for x in rem), 1),
+            "extra_measure_time_s": round(sum(x.get("time_cost") or 0.0 for x in d), 1),
+        })
+        return out
 
     def _opp_stats(self):
         """模块O 汇总: 触发次数、命中率、认证转化率、补测规避与动作成本。"""
@@ -479,6 +512,15 @@ class Problem3Robot:
     # 机会集合口径: "spec" = 规格版(Ω>20m ∨ 示向<2 ∨ 交会<30°, 即所有未认证频道);
     #               "uncert" = 收紧版(仅当前无法定位、会走补测/归航的频道)。
     OPP_TARGET = "spec"
+    # ===== 模块R(补测点复用, 默认关): 在必须访问的补测点上顺带观测其他待补测频道 =====
+    SUPP_REUSE = False                 # 总开关(默认关 = 补测段行为与冻结版完全一致)
+    SUPP_REUSE_ROUTE_GATE_M = 2000.0   # 全局门控: 当前补测巡回长度 >= 该值才启用(None=总是启用)
+    SUPP_REUSE_MIN_SAVING_M = 100.0    # 局部门控: 删除该补测点的预计路线收益 >= 该值
+    SUPP_REUSE_MAX_PER_POINT = 1       # 每个补测点最多顺带测 1 个频道
+    SUPP_REUSE_MIN_CROSS_DEG = 45.0    # 预测有效交会角门槛
+    # 删除条件: "cert" = 仅当机会观测后达到 MEC 认证(Ω<=20m)才删任务(保守);
+    #           "cert_or_ls" = 达到认证或冻结版可用的快速定位(LS)即删(激进, 实测有害)。
+    SUPP_REUSE_DELETE_MODE = "cert"
 
     def __init__(self, client):
         self.c = client
@@ -717,9 +759,14 @@ class Problem3Robot:
         if supp_tasks:
             self.log(f"补测任务 {len(supp_tasks)} 个, 开放路径优化")
             self._phase("supplement")
-            spts = [(x, y) for _, x, y in supp_tasks]
-            sorder = self._optimal_open_path(spts, tuple(c.position))
-            for idx in sorder:
+            if self.SUPP_REUSE:
+                # 模块R(仅实验): 补测点复用 —— 在已必须访问的补测点上顺带观测其他待补测频道,
+                # 若新观测确实消除该频道的定位需求, 则删除其补测任务并重规划路线。
+                self._run_supplement_reuse(supp_tasks, clear_tasks)
+            else:
+              spts = [(x, y) for _, x, y in supp_tasks]
+              sorder = self._optimal_open_path(spts, tuple(c.position))
+              for idx in sorder:
                 ch, x, y = supp_tasks[idx]        # 直接用索引取任务, 不再用坐标查表
                 ok, res, svd = c.measure(x, y, ch)
                 if ok and res == "near":
@@ -1063,6 +1110,192 @@ class Problem3Robot:
             ch = d.get("ch")
             d["avoided_supplement"] = bool(d.get("became_certified")
                                            and ch not in self.supp_channels)
+
+    # ---- 模块R: 补测点复用(默认关) ----
+    #  时序: 扫描结束 -> 生成补测任务与开放路线 -> 到达补测点 -> 完成本频道补测
+    #        -> 至多顺带测 1 个"尚未执行补测"的困难频道 -> 若消除其定位需求则删除任务并重规划。
+    #  双门控: 全局路线门控 L_supp >= GATE; 局部删除收益门控 S_j >= MIN_SAVING。
+    def _tour_len(self, pts, start):
+        if not pts:
+            return 0.0
+        order = self._optimal_open_path(pts, start)
+        L = 0.0; cur = start
+        for i in order:
+            L += math.hypot(pts[i][0]-cur[0], pts[i][1]-cur[1]); cur = pts[i]
+        return L
+
+    def _run_supplement_reuse(self, supp_tasks, clear_tasks):
+        c = self.c
+        remaining = [tuple(t) for t in supp_tasks]      # (ch, x, y)
+        pts0 = [(x, y) for _, x, y in remaining]
+        L0 = self._tour_len(pts0, tuple(c.position))
+        armed = (self.SUPP_REUSE_ROUTE_GATE_M is None
+                 or L0 >= self.SUPP_REUSE_ROUTE_GATE_M)
+        self._note_reuse({"kind": "gate", "route_len_m": round(L0, 1),
+                          "n_tasks": len(remaining), "armed": bool(armed),
+                          "gate_m": self.SUPP_REUSE_ROUTE_GATE_M,
+                          "point": None, "channel": None})
+        self.log(f"补测复用: 巡回 {L0:.0f} m / {len(remaining)} 任务, "
+                 f"门控 {'开启' if armed else '未达阈值(退化为原始补测)'}")
+        while remaining:
+            pts = [(x, y) for _, x, y in remaining]
+            order = self._optimal_open_path(pts, tuple(c.position))
+            idx = order[0]
+            ch, x, y = remaining[idx]
+            # 1) 本频道的专用补测(与原流程完全一致)
+            ok, res, svd = c.measure(x, y, ch)
+            if ok and res == "near":
+                clear_tasks.append((ch, x, y, "near", None, None))
+            else:
+                if ok and res == "direction":
+                    self.bearings[ch].append(((x, y), svd))
+                pt = self._locate_quick(ch, tag=f"补测后({x:.0f},{y:.0f})")
+                dg = self.locate_diag.get(ch, {})
+                if pt is not None:
+                    clear_tasks.append((ch, pt[0], pt[1], dg.get("method") or "none",
+                                        dg.get("omega_radius_m"),
+                                        dg.get("cross_angle_deg")))
+                else:
+                    self._phase("homing")
+                    bt = self._binary_homing(ch)
+                    if bt is not None:
+                        clear_tasks.append((ch, bt[0], bt[1], "binary", None, None))
+                    self._phase("supplement")
+            remaining.pop(idx)
+            # 2) 机会复用: 在刚到达的补测点上顺带观测一个"尚未执行补测"的频道
+            if not armed or not remaining:
+                continue
+            pick = self._reuse_pick(remaining, (x, y))
+            if pick is None:
+                continue
+            self._reuse_measure(pick, remaining, (x, y), clear_tasks)
+
+    def _reuse_pick(self, remaining, Q):
+        """在当前补测点 Q 选一个候选频道(至多 OPP_SUPP_MAX_PER_POINT 个, 返回最优一个)。"""
+        pts = [(x, y) for _, x, y in remaining]
+        order = self._optimal_open_path(pts, tuple(Q))
+        seq = [pts[i] for i in order]
+        best = []
+        for pos_i, i in enumerate(order):
+            ch_j = remaining[i][0]
+            hard = self._opp_hard(ch_j)
+            if hard is None:
+                continue
+            rec, rep = hard
+            dirs = self.bearings[ch_j]
+            sep = min([math.hypot(Q[0]-P[0], Q[1]-P[1]) for P, _ in dirs] or [1e9])
+            if sep < self.OPP_MIN_SEP_M:
+                continue
+            cross = self._opp_pred_cross(ch_j, Q, rep)
+            if cross < self.SUPP_REUSE_MIN_CROSS_DEG:
+                continue
+            # 局部删除收益: 该点在当前巡回中的前后邻点
+            U = Q if pos_i == 0 else seq[pos_i-1]
+            V = seq[pos_i+1] if pos_i + 1 < len(seq) else None
+            Qj = seq[pos_i]
+            saving = (math.hypot(Qj[0]-U[0], Qj[1]-U[1])
+                      + (math.hypot(Qj[0]-V[0], Qj[1]-V[1]) if V else 0.0)
+                      - (math.hypot(U[0]-V[0], U[1]-V[1]) if V else 0.0))
+            if saving < self.SUPP_REUSE_MIN_SAVING_M:
+                continue
+            poly = feasible_region(dirs)
+            pred_r = self._opp_pred_radius(ch_j, Q, poly) if len(poly) >= 3 else None
+            certifiable = (pred_r is not None and pred_r <= R_CLEAR)
+            # 问题三: 接收保证优先(max_{S∈Ω}|Q-S| <= 1000 为一级)
+            if len(poly) >= 3:
+                far = max(math.hypot(Q[0]-S[0], Q[1]-S[1]) for S in poly)
+            else:
+                far = min([math.hypot(Q[0]-P[0], Q[1]-P[1]) for P, _ in dirs] or [1e9]) + 1500.0
+            guaranteed = far <= R_GUARANTEE
+            best.append({"ch": ch_j, "idx": i, "cross_pred_deg": round(cross, 1),
+                         "mec_before": rec["omega_radius_m"], "dirs_before": rec["n_dirs"],
+                         "min_sep_m": round(sep, 1), "saving_m": round(saving, 1),
+                         "pred_radius_m": None if pred_r is None else round(pred_r, 1),
+                         "predicted_certifiable": bool(certifiable),
+                         "guaranteed_recv": bool(guaranteed),
+                         "far_to_omega_m": round(far, 1), "point": [round(Q[0], 1),
+                                                                    round(Q[1], 1)],
+                         "kind": "reuse"})
+        if not best:
+            return None
+        best.sort(key=lambda d: (d["predicted_certifiable"], d["guaranteed_recv"],
+                                 -abs(d["cross_pred_deg"] - 90.0), d["saving_m"],
+                                 d["min_sep_m"]), reverse=True)
+        return best[0] if self.SUPP_REUSE_MAX_PER_POINT > 0 else None
+
+    def _reuse_measure(self, cand, remaining, Q, clear_tasks):
+        """执行一次机会复用测量; 若消除定位需求则删除该频道的补测任务并重规划。"""
+        c = self.c; ch = cand["ch"]
+        if (round(Q[0], 1), round(Q[1], 1), ch) in self._meas_seen:
+            cand["result"] = "skipped_dup"
+        else:
+            snap0 = {k: getattr(self.c, k, None)
+                     for k in ("dist", "n_measure", "n_switch", "n_clear", "n_clear_ok")}
+            L_before = self._tour_len([(x, y) for _, x, y in remaining], tuple(c.position))
+            ok, res, svd = c.measure(Q[0], Q[1], ch)
+            self._meas_seen.add((round(Q[0], 1), round(Q[1], 1), ch))
+            cand["result"] = res if ok else "rejected"
+            if ok and res == "direction":
+                self.bearings[ch].append(((Q[0], Q[1]), svd))
+            elif ok and res == "near":
+                self.near_pos[ch] = (Q[0], Q[1])
+            if ok and res in ("direction", "near"):
+                rec2, pt = self._locate_eval(ch)
+                cand["mec_after"] = rec2["omega_radius_m"]
+                cand["dirs_after"] = rec2["n_dirs"]
+                cand["cross_actual_deg"] = rec2["cross_angle_deg"]
+                cand["became_certified"] = bool(rec2["method"] == "mec")
+                removable = (cand["became_certified"] or res == "near"
+                             or (self.SUPP_REUSE_DELETE_MODE == "cert_or_ls"
+                                 and pt is not None))
+                if removable:
+                    # 定位需求已消除 -> 删除该频道的专用补测任务
+                    j = next((k for k, t in enumerate(remaining) if t[0] == ch), None)
+                    if j is not None:
+                        remaining.pop(j)
+                        cand["removed"] = True
+                        cand["remove_reason"] = ("certified_after_opp"
+                                                 if rec2["method"] == "mec"
+                                                 else "quick_located_after_opp")
+                        if res == "near":
+                            clear_tasks.append((ch, Q[0], Q[1], "near", None, None))
+                        else:
+                            clear_tasks.append((ch, pt[0], pt[1],
+                                                rec2["method"] or "none",
+                                                rec2["omega_radius_m"],
+                                                rec2["cross_angle_deg"]))
+                        L_after = self._tour_len([(x, y) for _, x, y in remaining],
+                                                 tuple(c.position))
+                        cand["route_saving_actual_m"] = round(L_before - L_after, 1)
+                    else:
+                        cand["removed"] = False
+                        cand["remove_reason"] = "task_not_found"
+                else:
+                    cand["removed"] = False
+                    cand["remove_reason"] = "still_needs_supplement"
+            else:
+                cand["mec_after"] = cand["mec_before"]
+                cand["dirs_after"] = cand["dirs_before"]
+                cand["became_certified"] = False
+                cand["removed"] = False
+                cand["remove_reason"] = ("no_signal" if ok else "request_rejected")
+            snap1 = {k: getattr(self.c, k, None) for k in snap0}
+            cand["switch_count"] = ((snap1["n_switch"] - snap0["n_switch"])
+                                    if isinstance(snap0["n_switch"], (int, float)) else None)
+            cand["time_cost"] = (round((snap1["dist"]-snap0["dist"])/5.0
+                                       + (snap1["n_measure"]-snap0["n_measure"])*5.0
+                                       + (snap1["n_switch"]-snap0["n_switch"])*1.0, 1)
+                                 if isinstance(snap0["dist"], (int, float)) else None)
+        cand.setdefault("route_saving_actual_m", None)
+        cand["phase"] = getattr(self.c, "phase", None)
+        self._diag_list(self.c, "reuse_diag").append(cand)
+        self.log(f"补测复用 @ ({Q[0]:.0f},{Q[1]:.0f}): 频道 {ch} {cand['result']} "
+                 + (f"-> 删除补测任务({cand.get('remove_reason')}, "
+                    f"实际省 {cand.get('route_saving_actual_m')}m)"
+                    if cand.get("removed") else f"-> {cand.get('remove_reason')}"))
+
+    def _note_reuse(self, rec):
+        self._diag_list(self.c, "reuse_diag").append(rec)
 
     # ---- 开放路径最优顺序: n<=9 全排列精确, 否则最近邻 ----
     @staticmethod
