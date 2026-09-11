@@ -1,0 +1,14 @@
+[
+  {"file_name":"2023_E_009.txt","year":"2023","topic":"E","abstract_core":"结合患者临床信息及影像学特征来研究出血性脑卒中的发病概率、演进规律，从而最终精准预测患者的临床预后，这对出血性脑卒中的临床研究具有重要的意义。","core_model":"线性混合效应模型","keywords":"出血性脑卒中,血肿体积,水肿体积,高斯拟合,线性混合效应模型"},
+  {"file_name":"2023_E_010.txt","year":"2023","topic":"E","abstract_core":"本文的研究基于160 名血性脑卒中患者的临床数据和多次影像检查结果，构建了血肿扩张、水肿体积进展以及患者预后等预测模型，并探索了不同特征因素与预后预测的关联关系。","core_model":"XGBoost 模型","keywords":"出血性脑卒中,患者预后,机器学习,XGBoost,预测模型"},
+  {"file_name":"2023_F_001.txt","year":"2023","topic":"F","abstract_core":"本文从机理分析和数学模型的角度，借助传统物理方法和深度学习模型两种方式建立强对流降水临近预报模型，研究双偏振雷达观测数据和降水微物理结构之间的关系，预测临近雷达数据和定量降水估测","core_model":"GAN-AR-U-Net","keywords":"强对流降水,双偏振雷达,微物理结构,雨滴谱,临近预报"},
+  {"file_name":"2023_F_002.txt","year":"2023","topic":"F","abstract_core":"综上所述，SA-DRPP-DNet 和PP-Net 模型对于短临强降水预测具有良好的精度和泛用性，预测结果符合预期。","core_model":"SA-DRPP-DNet","keywords":"双偏振雷达数据,深度学习,短临强降水,强对流降水,ConvLSTM"},
+  {"file_name":"2023_F_003.txt","year":"2023","topic":"F","abstract_core":"设计了一种多任务学习的模型架构来处理雷达三个观测量之间的依赖关系，利用编码器-解码器的预测结构来提取高维数据在不同时间和空间尺度上的关键特征","core_model":"MoG-3DST","keywords":"多任务学习,时空预测模型,降水临近预测,双偏振雷达"},
+  {"file_name":"2023_F_004.txt","year":"2023","topic":"F","abstract_core":"本文利用现有的深度学习的模型，研究了双偏振雷达数据与强对流天气之间的关系，在已知雷达数据的情况下对降水做出了预测，同时优化了数据融合方式，提出了更高效地利用探测数据的模型","core_model":"FURENet","keywords":"U-Net,FURENet,强对流临近预报,特征融合"},
+  {"file_name":"2023_F_005.txt","year":"2023","topic":"F","abstract_core":"本文以ConvLSTM 网络为主干结合特征层数据融合策略，设计了DTConvLSTM 深度学习模型。通过迭代寻练权重以及超参数优化，得到了能够拟合ZH发展趋势的深度学习模型。","core_model":"DTConvLSTM","keywords":"强对流天气,双偏振雷达,ConvLSTM网络,数据融合"},
+  {"file_name":"2023_F_006.txt","year":"2023","topic":"F","abstract_core":"在问题一建立的FURNet 模型基础之上，结合多尺度特征融合的优点，引入CBAM 注意力机制到上采样和下采样模块中，建立FURNet+CBAM 模型来提高模型对细节的关注程度","core_model":"FURNet+CBAM","keywords":"UNET 神经网络,ConvLSTM,CBAM 注意力机制,CSU-HIDRO 模型,符号回归"},
+  {"file_name":"2023_F_007.txt","year":"2023","topic":"F","abstract_core":"基于降雨雷达观测量参数产生的物理机理，选用NARX-RNN 模型构建神经网络，完成了基于前时间对后续时间雷达观测量的预估","core_model":"NARX-RNN","keywords":"离群因子检测(LOF),NARX-RNN 神经网络,雷达强散射点,测算融合,BP 神经网络"},
+  {"file_name":"2023_F_008.txt","year":"2023","topic":"F","abstract_core":"为了有效应用双偏振雷达信息对强对流降水做出更准确的短临预报,本文构建了NowcastNet 架构模型作为强对流降水预报的主体,并将其短临预报效果与其他模型作对比","core_model":"NowcastNet","keywords":"短临降水估测,双偏振雷达,Fuzzy logic 订正,NowcastNet,回归分析"},
+  {"file_name":"2023_F_009.txt","year":"2023","topic":"F","abstract_core":"本文基于题目所给的数据，利用深度学习技术，优化了强对流降水短临预报方法，解决了当前模型存在的几种问题，并评估了双偏振雷达资料在强对流降水临近预报中的贡献。","core_model":"组合扩散模型","keywords":"U-Net 模型,残差卷积,注意力机制,集成学习,组合扩散模型"},
+  {"file_name":"2023_F_010.txt","year":"2023","topic":"F","abstract_core":"本文从时序数据普遍存在的因果关系入手，研究了基于因果推理的强对流降水临近预报问题。","core_model":"时空因果图神经网络","keywords":"强对流降水预报,因果推理,时序因果性,空间关联性,时空图神经网络"}
+]

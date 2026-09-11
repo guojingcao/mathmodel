@@ -1,0 +1,63 @@
+{
+  "fonts": {
+    "english": "Times New Roman",
+    "chinese": "SimSun",
+    "times_new_roman_available": true,
+    "simsun_available": true
+  },
+  "fig01_single_wedge": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(4.1)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig01_single_wedge.pdf",
+    "[PASS] fig01_single_wedge.svg",
+    "[PASS] fig01_single_wedge.png"
+  ],
+  "fig02_feasible_region": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(4.1)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig02_feasible_region.pdf",
+    "[PASS] fig02_feasible_region.svg",
+    "[PASS] fig02_feasible_region.png"
+  ],
+  "fig03_number": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[PASS] Figure size (np.float64(7.01), np.float64(3.62)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig03_number.pdf",
+    "[PASS] fig03_number.svg",
+    "[PASS] fig03_number.png"
+  ],
+  "fig04_error": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[PASS] Figure size (np.float64(7.01), np.float64(3.62)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig04_error.pdf",
+    "[PASS] fig04_error.svg",
+    "[PASS] fig04_error.png"
+  ],
+  "fig05_angle": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[PASS] Figure size (np.float64(7.01), np.float64(3.62)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig05_angle.pdf",
+    "[PASS] fig05_angle.svg",
+    "[PASS] fig05_angle.png"
+  ]
+}

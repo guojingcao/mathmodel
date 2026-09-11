@@ -1,0 +1,29 @@
+test_angle_wrap (test_model.ModelTests.test_angle_wrap)
+跨零度与各象限方向使用 atan2 而不是 atan(y/x)。 ... ok
+test_circle_against_exhaustive (test_model.ModelTests.test_circle_against_exhaustive)
+小点集穷举所有两点圆与三点圆，独立检验增量最小圆。 ... ok
+test_constraint (test_model.ModelTests.test_constraint)
+边界包含、站点排除以及反向射线拒绝。 ... ok
+test_degenerate_metrics (test_model.ModelTests.test_degenerate_metrics)
+空集、单点、重复点、共线点不制造不存在的位置误差。 ... ok
+test_diameter_circle_counterexample (test_model.ModelTests.test_diameter_circle_counterexample)
+等边三角形证明 D/2 半径不能一般性覆盖可行域。 ... ok
+test_disk_and_parallel (test_model.ModelTests.test_disk_and_parallel)
+四分之一圆的面积解析值落入包络；平行方向由场地圆盘限制为有界。 ... ok
+test_empty_and_narrow (test_model.ModelTests.test_empty_and_narrow)
+相反角域为空；远窄于初始18m网格的区域仍能被边界细分发现。 ... ok
+test_exact_square_metrics (test_model.ModelTests.test_exact_square_metrics)
+正方形面积4、质心0、直径2√2、覆盖半径√2。 ... ok
+test_halfplanes_vs_angles (test_model.ModelTests.test_halfplanes_vs_angles)
+随机点上用独立原始角距判别交叉检验半平面表达。 ... ok
+test_invalid_inputs (test_model.ModelTests.test_invalid_inputs)
+不允许无约束、错配、NaN、过宽角域或负网格参数静默运行。 ... ok
+test_reference_and_convergence (test_model.ModelTests.test_reference_and_convergence)
+独立裁剪多边形的面积/直径/最小圆/质心应落在网格误差包络内。 ... ok
+test_zero_error_no_false_certainty (test_model.ModelTests.test_zero_error_no_false_certainty)
+零误差且交点未落格点时，未决是合法结果，不能返回空域结论。 ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.280s
+
+OK

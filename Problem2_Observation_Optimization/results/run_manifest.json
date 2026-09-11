@@ -1,0 +1,39 @@
+{
+  "model": "候选点枚举+Ω面积贪心；定位继承问题一",
+  "seed": 202604004013,
+  "repetitions": 30,
+  "config": {
+    "arena_radius": 1800.0,
+    "observation_radius": 1000.0,
+    "angular_step_deg": 15.0,
+    "error_bound_deg": 1.0,
+    "max_step_m": 2000.0,
+    "initial_grid": 200,
+    "optimization_resolution_m": 0.28125,
+    "evaluation_resolution_m": 0.0703125
+  },
+  "runs": 420,
+  "python": "3.11.9",
+  "numpy": "2.4.6",
+  "problem1_dependency": "D:\\My_MathModeling_Project\\Problem1_Localization",
+  "source_sha256": {
+    "config.py": "c9fc2e754b00a97d431dd9086a6f125ffa6edfe6cc96486c60bf4229f3b14fa7",
+    "experiment\\__init__.py": "4b259dfeee28004c9d628180dbb1f1e88c08987b01da13be803f95c3c74705d2",
+    "experiment\\angle_analysis.py": "03c13b026533ff928dea618e38671d289b635c8b43ecb7395d72fbacc2489db8",
+    "experiment\\common.py": "d9526fc4eecac1dc71e0782d30035ed5300f7b22a38a976e99ee75e375b41745",
+    "experiment\\compare_layout.py": "4aae4a698e9af2e240f1df3f5597ea96e408e2da9666ed630900a28e1667dd62",
+    "experiment\\point_number.py": "bd59878f1a351c48a56ebfcc4b2222e11794f8b0c89d64e8051870d1f2feaeab",
+    "experiment\\report.py": "e4051a48d057db8e0d71d3e165bf025b456768fa7ae8838101d04f56d46a46c8",
+    "main.py": "25bf51c62a08ad7d70fc98eeb0cdbdb5f9c3cb9ad7ce87d303f9f975d878057f",
+    "model\\__init__.py": "9233bbaa6cbec2ba0b6b7f85c4d315b08a8594eb875f9a1c7a73607a3115169f",
+    "model\\candidate_points.py": "fb7f71bd8f6a9e70d3dab45ba2fe3353ff9823f2678a82b65e16ea9e3709ddd0",
+    "model\\geometry_metric.py": "99c01650f3891db3ca7ddf37b61445c84bddc549ac8635282866508a0d957378",
+    "model\\layout_optimizer.py": "ff28683b4458480068f293fdd907bb9dd906aa03ba5e85a9f19bee63157ddb4a",
+    "model\\localization.py": "e02a4b04c3e63651e475cd4872ab70e63a5be10ff88ec47b84a0fe984bf28e38",
+    "tests\\__init__.py": "3bf20392fdcf4e865bc94b2fedfd76a90a6ed324803ec3bc7ebddfe97a2de3e8",
+    "tests\\test_problem2.py": "1b901fbf31c206d94f95a25cb4a9e51708d617a0b78544a4321a404c2ca9d8d4",
+    "validate.py": "a46c640e257ee0fa4f7d43d3816b9c669f2fbc164a0f3ca1a79ec783979b4055",
+    "visualization\\__init__.py": "c292e700ccbca884a962482bc1b22b94e9ce6781dc3dba7a443e1b04a55f925b",
+    "visualization\\plot_problem2.py": "39b43485f57826c8cc6143db52ed986c9befdcaff288131719f63bd66a0bb8e9"
+  }
+}

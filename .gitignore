@@ -1,0 +1,18 @@
+# ===== 大数据/资料目录(不入库) =====
+2025金地杯/
+2026华数杯/
+B_Model_Experiment/
+corpus/
+tmp/
+.dsh-uploads/
+.dsh-vision-toolkit/
+.idea/
+.pytest_cache/
+**/__pycache__/
+**/node_modules/
+workspace/_tmp_origin_plugin/
+*.zip
+
+# ===== 运行产物(日志按需保留, 默认不入库) =====
+**/logs/*.jsonl
+**/logs/*.json

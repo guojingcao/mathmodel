@@ -1,0 +1,10 @@
+# Python 依赖包清单 —— 请按需安装（pip install -r requirements.txt）
+# 示例依赖（按实际项目需要增删）：
+# mineru>=2.0        # MinerU 文档解析（PDF -> JSON/Markdown）
+# pymupdf            # PDF 读取与渲染
+# requests           # 网络请求（批量下载 PDF）
+# beautifulsoup4     # HTML/网页解析
+# pandas             # 数据处理
+# openpyxl           # Excel 读写
+# jieba              # 中文分词
+# scikit-learn       # 机器学习（分类/聚类分析）

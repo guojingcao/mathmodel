@@ -1,0 +1,13 @@
+{
+  "runs": 450,
+  "truth_feasible_count": 450,
+  "monotonicity_violations_beyond_grid_bounds": {
+    "number": 0,
+    "error": 0
+  },
+  "max_area_bound_gap": 13.794879913330078,
+  "max_diameter_bound_gap": 0.23582666598181845,
+  "max_radius_bound_gap": 0.11791333299090923,
+  "angle_mean_error_best": 90,
+  "area_error_loglog_slope": 2.1987133112076864
+}

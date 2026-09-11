@@ -1,0 +1,67 @@
+{
+  "status": "PASS",
+  "unit_tests": 9,
+  "problem1_reference_geometry_cases": 420,
+  "unique_experiment_ids": "PASS",
+  "paired_inputs": "PASS",
+  "source_hashes": "PASS",
+  "function_docstrings": "PASS",
+  "maximum_localization_error_discretization_gap_m": 0.024304636193266838,
+  "figures": [
+    {
+      "file": "fig01_optimized_layout.png",
+      "pixels": [
+        1775,
+        2153
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    },
+    {
+      "file": "fig02_layout_regions.png",
+      "pixels": [
+        3935,
+        1649
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    },
+    {
+      "file": "fig03_number.png",
+      "pixels": [
+        3984,
+        2153
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    },
+    {
+      "file": "fig04_angle.png",
+      "pixels": [
+        3919,
+        2153
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    },
+    {
+      "file": "fig05_greedy_convergence.png",
+      "pixels": [
+        3943,
+        2153
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    }
+  ]
+}

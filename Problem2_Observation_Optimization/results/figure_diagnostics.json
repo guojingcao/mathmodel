@@ -1,0 +1,63 @@
+{
+  "fonts": {
+    "english": "Times New Roman",
+    "chinese": "SimSun",
+    "times_new_roman_available": true,
+    "simsun_available": true
+  },
+  "fig01_optimized_layout": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[PASS] Figure size (np.float64(7.01), np.float64(3.62)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig01_optimized_layout.pdf",
+    "[PASS] fig01_optimized_layout.svg",
+    "[PASS] fig01_optimized_layout.png"
+  ],
+  "fig02_layout_regions": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(2.76)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig02_layout_regions.pdf",
+    "[PASS] fig02_layout_regions.svg",
+    "[PASS] fig02_layout_regions.png"
+  ],
+  "fig03_number": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[PASS] Figure size (np.float64(7.01), np.float64(3.62)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig03_number.pdf",
+    "[PASS] fig03_number.svg",
+    "[PASS] fig03_number.png"
+  ],
+  "fig04_angle": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[PASS] Figure size (np.float64(7.01), np.float64(3.62)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig04_angle.pdf",
+    "[PASS] fig04_angle.svg",
+    "[PASS] fig04_angle.png"
+  ],
+  "fig05_greedy_convergence": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[PASS] Figure size (np.float64(7.01), np.float64(3.62)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig05_greedy_convergence.pdf",
+    "[PASS] fig05_greedy_convergence.svg",
+    "[PASS] fig05_greedy_convergence.png"
+  ]
+}

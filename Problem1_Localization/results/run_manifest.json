@@ -1,0 +1,31 @@
+{
+  "model": "确定性有界误差角域交集，自适应网格",
+  "seed": 202604004013,
+  "repetitions": 30,
+  "grid": {
+    "radius": 1800.0,
+    "initial_grid": 200,
+    "resolution": 0.03515625,
+    "max_cells": 2000000
+  },
+  "python": "3.11.9",
+  "numpy": "2.4.6",
+  "figure_directory": "D:\\My_MathModeling_Project\\origin_figures\\Problem1_Localization",
+  "source_sha256": {
+    "config.py": "fa37b9b40e81ba8744eddc030138962e35087c999efe9dfb2593a7b470086fa1",
+    "experiment\\__init__.py": "1e085fe528cfcdb218e7e1974396a26b33f98f3cf0c8e38a987094e01512e642",
+    "experiment\\common.py": "9b146564f61ca267e6e7d9f35bd40fe4fedd25fce3e1438a1e7593b277e5e7c3",
+    "experiment\\experiment_angle.py": "f1eeba678fa722b33952b61dbdf535edb3fa60a9d7f5ae21ce32753eafc3502d",
+    "experiment\\experiment_error.py": "6641a94dba6e14813e32dbb2902d73b5d4cf37e755fa31e2decd4ed2b6fc66da",
+    "experiment\\experiment_number.py": "41464df226e057630762b15935d88e92d95e40510433c1c73023991d1fc96edb",
+    "experiment\\report.py": "0c6ac9212365c21b024eb4147b19031f8b5c78700bfb4df3b53095c97ce40b6b",
+    "main.py": "0daa2305397b09f5304b452f12aca12495e54eef68fda16bb1badc024a1a9e74",
+    "model\\__init__.py": "194bc7988a383a0e11797d1bb115beef70a9fcf897b63f2a9e0cf0a9047ed093",
+    "model\\feasible_region.py": "1f014cc017dde04ec0348ba56419e34e58a811a0d20956887da7978c16c1fab5",
+    "model\\geometry.py": "05bf5e9413d13cbd7da6646d24bcfc4a77edd51d922b9b11b775bf8ee4bcfe99",
+    "model\\metrics.py": "45ae56727d601fb3c4e232bb861417a50b1f681f2735f53d664ad99f1e28d064",
+    "tests\\test_model.py": "d4c9f5aab382ba75374b8e4115c23ff4a92adae064cd1bc8eef54ac2c844b373",
+    "visualization\\__init__.py": "0544f3559cbba39b76f7fc924e519e054ac364973412537132439cab96b03733",
+    "visualization\\plot_results.py": "0ba1b4f87abf8152a1f1ac640e49978648f942a2a96e5a796c571a3b2de5efd9"
+  }
+}

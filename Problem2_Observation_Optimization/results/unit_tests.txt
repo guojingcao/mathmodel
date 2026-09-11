@@ -1,0 +1,23 @@
+test_candidate_validation (test_problem2.Problem2Tests.test_candidate_validation)
+非法中心、半径、步长和场地不足应明确报错。 ... ok
+test_candidates (test_problem2.Problem2Tests.test_candidates)
+圆周候选应有24个、无重复、半径1000m且位于场地。 ... ok
+test_dop (test_problem2.Problem2Tests.test_dop)
+共线方向DOP无穷，正交两站DOP为√2。 ... ok
+test_dop_is_only_baseline (test_problem2.Problem2Tests.test_dop_is_only_baseline)
+DOP基线共享起点和候选集，但不调用或替换主优化结果。 ... ok
+test_error_validation (test_problem2.Problem2Tests.test_error_validation)
+测量误差维数必须与站点一致，站点不可与参考目标重合。 ... ok
+test_intersection_angle (test_problem2.Problem2Tests.test_intersection_angle)
+正交为90°，反向共线按条件角定义为0°。 ... ok
+test_optimizer_candidates_evaluated (test_problem2.Problem2Tests.test_optimizer_candidates_evaluated)
+第二轮应评价除起点外所有23个可达候选点。 ... ok
+test_optimizer_deterministic_and_nested (test_problem2.Problem2Tests.test_optimizer_deterministic_and_nested)
+相同输入结果完全可复现，选择无重复且面积包络随加点不扩大。 ... ok
+test_problem1_inheritance (test_problem2.Problem2Tests.test_problem1_inheritance)
+适配器返回问题一RegionResult，真值包含且指标封装一致。 ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 2.100s
+
+OK

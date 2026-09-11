@@ -1,0 +1,25 @@
+{
+  "runs": 420,
+  "truth_feasible": 420,
+  "best_mean_area_method": "optimized",
+  "best_mean_diameter_method": "optimized",
+  "best_mean_cover_radius_method": "uniform",
+  "best_mean_localization_error_angle": 90,
+  "number_area_monotonicity_violations_beyond_bounds": 0,
+  "optimized_indices": [
+    0,
+    6,
+    9,
+    3,
+    10,
+    14
+  ],
+  "dop_baseline_indices": [
+    0,
+    6,
+    3,
+    9,
+    2,
+    8
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "status": "PASS",
+  "unit_tests": 12,
+  "reference_geometry_cases": 450,
+  "paired_input_checks": "PASS",
+  "source_hash_checks": "PASS",
+  "maximum_centroid_discretization_error_m": 0.006425666377904868,
+  "convergence_area_gaps_m2": [
+    44.6923828125,
+    22.43023681640625,
+    11.24725341796875,
+    5.611885070800781,
+    2.8190746307373047
+  ],
+  "function_docstrings": "PASS",
+  "figures": [
+    {
+      "file": "fig01_single_wedge.png",
+      "pixels": [
+        3979,
+        2433
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    },
+    {
+      "file": "fig02_feasible_region.png",
+      "pixels": [
+        4001,
+        2433
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    },
+    {
+      "file": "fig03_number.png",
+      "pixels": [
+        3984,
+        2153
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    },
+    {
+      "file": "fig04_error.png",
+      "pixels": [
+        3984,
+        2153
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    },
+    {
+      "file": "fig05_angle.png",
+      "pixels": [
+        3919,
+        2153
+      ],
+      "dpi": [
+        599.9988,
+        599.9988
+      ]
+    }
+  ]
+}

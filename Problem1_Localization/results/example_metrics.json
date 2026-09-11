@@ -1,0 +1,20 @@
+{
+  "status": "sampled",
+  "area": 984.1578483581543,
+  "area_lower": 981.3519058227539,
+  "area_upper": 986.9637908935547,
+  "diameter": 49.92466018859106,
+  "diameter_upper": 50.01701568986806,
+  "cover_radius": 25.00850784493403,
+  "cover_radius_lower": 24.96233009429553,
+  "centroid_x": -13.344252079526127,
+  "centroid_y": 159.36564840876392,
+  "centroid_error_bound": 0.28439720507056754,
+  "cover_center_x": -16.8046875,
+  "cover_center_y": 158.431640625,
+  "localization_error": 8.929969506407256,
+  "valid_point_count": 15810,
+  "leaf_count": 9064,
+  "boundary_width": 0.03515625,
+  "visited_cells": 58256
+}
