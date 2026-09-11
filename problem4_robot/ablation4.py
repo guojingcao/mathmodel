@@ -280,6 +280,69 @@ def paired_supp_cap(n=400, seed=3026):
     return res
 
 
+def run_mesh(mesh, n=400, seed=3026, ratios=(0.5, 1.0)):
+    """网格几何消融: mesh = (a, margin, theta, offx, offy) 或 None(=冻结默认)。
+
+    同一批场景(按案例编号派生)下跑一种网格, 逐案例记录时间/移动/检测/清除与证书状态。
+    """
+    if mesh is None:
+        r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = 900.0, 800.0, 0.0, (0.0, 0.0)
+    else:
+        a, mg, th, ox, oy = mesh
+        r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = a, mg, th, (ox, oy)
+    out = {}
+    for pd in ratios:
+        rows = []
+        for ci in range(n):
+            env = case_env(seed, ci, directional=True, p_dir=pd)
+            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                k = rb.run()
+            T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
+                 + cli.n_clear_ok*5 + cli.fail*3)
+            rows.append(dict(cr=k/env.n_src, miss=1 if k < env.n_src else 0, n_src=env.n_src,
+                             T=T, dist=cli.dist, meas=cli.n_measure, fail=cli.fail,
+                             n_pts=len(rb.pts), n_tris=len(rb.tris),
+                             cert_ok=bool(getattr(rb, "mesh_stats", None) is not None)))
+        out[pd] = rows
+    return out
+
+
+def paired_mesh(n=400, seed=3026,
+                cand=(920.0, 700.0, 20.0, 460.0, 398.0)):
+    """网格几何配对实验: 冻结网格 vs 候选网格(旋转+平移), 硬约束=全清率100%。"""
+    arms = [("冻结 900/800/θ0/off0", None), (f"候选 {cand[0]:.0f}/{cand[1]:.0f}/"
+                                          f"θ{cand[2]:.0f}/off({cand[3]:.0f},{cand[4]:.0f})", cand)]
+    res = {}
+    for name, mesh in arms:
+        t0 = time.time()
+        res[name] = run_mesh(mesh, n, seed)
+        print(f"  已跑 {name}  [{time.time()-t0:.0f}s]", flush=True)
+    base = res[arms[0][0]]
+    print(f"\n[网格几何配对] n={n}/臂/定向比例, 同场景(按案例编号派生)")
+    for pd in (0.5, 1.0):
+        print(f"\n=== 定向比例 {pd*100:.0f}% ===")
+        print("%-34s%8s%6s%9s%10s%13s%9s%9s%9s" % (
+            "网格", "全清率", "漏清", "平均(s)", "Δ时间(s)", "Δ95%CI", "P90(s)",
+            "最大(s)", "检测/例"))
+        for name, _ in arms:
+            rows = res[name][pd]
+            T = np.array([r["T"] for r in rows])
+            p = _pair_stat(T, np.array([r["T"] for r in base[pd]]))
+            print("%-34s%7.1f%%%6d%9.0f%+10.1f%13s%9.0f%9.0f%9.1f" % (
+                name, np.mean([r["cr"] for r in rows])*100,
+                sum(r["miss"] for r in rows), T.mean(), p[0],
+                f"[{p[2][0]:.0f},{p[2][1]:.0f}]", np.percentile(T, 90), T.max(),
+                np.mean([r["meas"] for r in rows])))
+        print("  移动: " + "  ".join(
+            f"{name.split()[0]} {np.mean([r['dist'] for r in res[name][pd]]):.0f}m" for name, _ in arms))
+        print("  网格: " + "  ".join(
+            f"{name.split()[0]} {res[name][pd][0]['n_pts']}点/{res[name][pd][0]['n_tris']}三角"
+            for name, _ in arms))
+    r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = 900.0, 800.0, 0.0, (0.0, 0.0)
+    return res
+
+
 def run_onway(delta, n=30, seed=3026, ratios=(0.5, 1.0)):
     """同一批随机案例(同 seed)下跑一个顺路清除阈值, 返回逐案例明细用于配对比较。
 
@@ -345,6 +408,9 @@ def paired_onway(n=30, seed=3026, arms=(200.0, 300.0, 500.0, 800.0, None)):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--mesh-paired":
+        paired_mesh(int(sys.argv[2]) if len(sys.argv) > 2 else 400)
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] == "--supp-cap":
         paired_supp_cap(int(sys.argv[2]) if len(sys.argv) > 2 else 400)
         sys.exit(0)

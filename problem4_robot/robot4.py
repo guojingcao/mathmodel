@@ -31,6 +31,10 @@ R_GUARANTEE = 1000.0     # 有效接收半径下限(1000m 内必可收到, 三�
 N_CH = 20
 MESH_A = 900.0           # 三角网格边长(<=1000 保证接收; 实测 900 最快且全覆盖)
 MESH_MARGIN = 800.0      # 网格向圆外延伸量(实测 800 起才 100% 覆盖圆盘)
+# 网格几何的额外自由度(默认值 = 冻结版: 无旋转无平移)。旋转/平移不改变任何算法逻辑,
+# 只改变 31 个顶点的位置, 从而改变"固定扫描巡回"的长度与证书检测次数。
+MESH_THETA = 0.0         # 旋转角(度)
+MESH_OFFSET = (0.0, 0.0)  # 平移(米)
 ON_WAY_DELTA = 300.0     # 受限顺路清除阈值
 
 
@@ -433,18 +437,27 @@ def angle_diff(a, b):
 
 
 # ==================== 三角网格 + 三角形 ====================
-def tri_mesh(a=MESH_A, margin=MESH_MARGIN):
-    """三角网格点(覆盖半径1800圆盘并向圆外延伸 margin)。"""
+def tri_mesh(a=MESH_A, margin=MESH_MARGIN, theta_deg=None, offset=None):
+    """三角网格点(覆盖半径1800圆盘并向圆外延伸 margin), 可选旋转/平移。
+
+    theta_deg / offset 为 None 时取模块常量 MESH_THETA / MESH_OFFSET(默认 0 / (0,0),
+    即与冻结版完全一致)。旋转与平移不改变证书逻辑与覆盖判定方式, 只改变顶点位置。
+    """
+    theta_deg = MESH_THETA if theta_deg is None else theta_deg
+    offset = MESH_OFFSET if offset is None else offset
+    th = math.radians(theta_deg); ct, st = math.cos(th), math.sin(th)
     Rmax = R_AREA + margin
     dy = a * math.sqrt(3) / 2.0
     nr = int(Rmax / dy) + 2
     pts = []
     for j in range(-nr, nr+1):
-        y = j * dy
+        y0 = j * dy + offset[1]
         xoff = (a/2.0) if (j % 2) else 0.0
         nx = int(Rmax / a) + 2
         for i in range(-nx, nx+1):
-            x = i*a + xoff
+            x0 = i*a + xoff + offset[0]
+            x = x0*ct - y0*st
+            y = x0*st + y0*ct
             if math.hypot(x, y) <= Rmax + 1e-6:
                 pts.append((round(x, 6), round(y, 6)))
     # 去重
