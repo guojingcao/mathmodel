@@ -1143,6 +1143,7 @@ class Problem3Robot:
             idx = order[0]
             ch, x, y = remaining[idx]
             # 1) 本频道的专用补测(与原流程完全一致)
+            pos_before = tuple(c.position)
             ok, res, svd = c.measure(x, y, ch)
             if ok and res == "near":
                 clear_tasks.append((ch, x, y, "near", None, None))
@@ -1163,7 +1164,13 @@ class Problem3Robot:
                     self._phase("supplement")
             remaining.pop(idx)
             # 2) 机会复用: 在刚到达的补测点上顺带观测一个"尚未执行补测"的频道
+            #    (若原任务触发了二分归航, 机器狗已离开该点 -> 必须放弃, 绝不返回)
             if not armed or not remaining:
+                continue
+            if tuple(c.position) != (x, y):
+                self._note_reuse({"kind": "skip_left", "channel": None, "point": [round(x, 1),
+                                  round(y, 1)], "result": "task_moved_away",
+                                  "phase": getattr(self.c, "phase", None)})
                 continue
             pick = self._reuse_pick(remaining, (x, y))
             if pick is None:
@@ -1482,7 +1489,50 @@ def main(argv=None):
                         help=f"竞技场ID(默认 {DEFAULT_ARENA_ID})")
     parser.add_argument("--log-file", dest="log_file", default=None,
                         help="本地行为日志输出路径(默认 robot_log_<时间戳>.jsonl)")
+    parser.add_argument("--tag", dest="tag", default=os.environ.get("LOG_TAG", ""),
+                        help="日志文件名后缀标记(也可用环境变量 LOG_TAG)")
+    # ===== 实验开关(默认全关; 冻结默认值不受影响) =====
+    parser.add_argument("--opp", action="store_true",
+                        help="启用模块O 机会性顺带观测(建议配合 --opp-target uncert)")
+    parser.add_argument("--opp-target", dest="opp_target", default="uncert",
+                        choices=["spec", "uncert"],
+                        help="机会集合口径: uncert=仅对当前定不了位的频道(离线更优), "
+                             "spec=规格版(Ω>20m 或示向退化)")
+    parser.add_argument("--opp-max", dest="opp_max", type=int, default=2,
+                        help="每个清除停靠点最多顺带观测几个频道(默认 2)")
+    parser.add_argument("--opp-cross", dest="opp_cross", type=float, default=45.0,
+                        help="机会观测的预测有效交会角门槛(度, 默认 45)")
+    parser.add_argument("--reuse", action="store_true",
+                        help="启用模块R 补测点复用(在必须访问的补测点上顺带观测其他待补测频道)")
+    parser.add_argument("--reuse-gate", dest="reuse_gate", type=float, default=1500.0,
+                        help="模块R 全局门控: 补测巡回长度 >= 该值才启用(0=总是启用)")
+    parser.add_argument("--reuse-saving", dest="reuse_saving", type=float, default=0.0,
+                        help="模块R 局部删除收益门控 S_j >= 该值(米, 0=不设局部门控)")
+    parser.add_argument("--reuse-delete", dest="reuse_delete", default="cert_or_ls",
+                        choices=["cert", "cert_or_ls"],
+                        help="模块R 删除条件: cert=仅认证后删(保守), "
+                             "cert_or_ls=认证或快速定位即删(离线略优)")
     args = parser.parse_args(argv)
+
+    # 实验开关: 仅在显式传参时生效, 默认保持冻结配置
+    if args.opp:
+        Problem3Robot.OPP_MEASURE = True
+        Problem3Robot.OPP_TARGET = args.opp_target
+        Problem3Robot.OPP_MAX_PER_POINT = max(1, args.opp_max)
+        Problem3Robot.OPP_MIN_CROSS_DEG = args.opp_cross
+    if args.reuse:
+        Problem3Robot.SUPP_REUSE = True
+        Problem3Robot.SUPP_REUSE_ROUTE_GATE_M = (None if args.reuse_gate <= 0
+                                                 else args.reuse_gate)
+        Problem3Robot.SUPP_REUSE_MIN_SAVING_M = max(0.0, args.reuse_saving)
+        Problem3Robot.SUPP_REUSE_DELETE_MODE = args.reuse_delete
+    print(f"[config] OPP_MEASURE={Problem3Robot.OPP_MEASURE}"
+          f"(target={Problem3Robot.OPP_TARGET}, max/点={Problem3Robot.OPP_MAX_PER_POINT}, "
+          f"交会门槛={Problem3Robot.OPP_MIN_CROSS_DEG}°)  "
+          f"SUPP_REUSE={Problem3Robot.SUPP_REUSE}"
+          f"(gate={Problem3Robot.SUPP_REUSE_ROUTE_GATE_M}, "
+          f"saving={Problem3Robot.SUPP_REUSE_MIN_SAVING_M}, "
+          f"delete={Problem3Robot.SUPP_REUSE_DELETE_MODE})", flush=True)
 
     if not args.robot_id:
         print("错误: 未提供参赛队号。用法: python robot.py --robot-id 你的队号 "
@@ -1493,7 +1543,8 @@ def main(argv=None):
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = args.log_file or os.path.join(
-        log_dir, "p3_log_%s.jsonl" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+        log_dir, "p3_log_%s%s.jsonl" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
+                                        ("_" + args.tag) if args.tag else ""))
     client = SimClient(args.base_url, args.robot_id, args.arena_id)
     robot = Problem3Robot(client)
     exit_code = 0
