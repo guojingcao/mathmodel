@@ -47,6 +47,9 @@ class SimClient:
         self.virtual_time = 0.0
         self.meta = {}          # 机器人回填: 配置/网格/逐频道结果, 写入 JSON 汇总
         self.error = None       # 异常说明(如接口未开放), 写入 JSON 汇总
+        self.phase = "init"     # 当前算法阶段(机器人回填, 用于分阶段统计)
+        self.locate_history = []  # 机器人回填: 每次定位的 方式/Ω半径/交会角
+        self.clear_diag = []      # 机器人回填: 每次清除的 定位来源/Ω半径/结果
 
     def _new_req_id(self, tag):
         self._seq += 1
@@ -58,6 +61,7 @@ class SimClient:
             self.virtual_time = float(vt)
         self.actions.append({"seq": self._seq, "path": path, "payload": payload,
                              "accepted": resp.get("accepted"), "virtual_time_s": vt,
+                             "phase": getattr(self, "phase", None),
                              "response": resp})
 
     def post(self, path, payload, timeout=8):
@@ -98,21 +102,50 @@ class SimClient:
         return filepath
 
     def build_summary(self):
-        """结构化 JSON 汇总(配置/网格/接口计数/逐频道结果)。"""
+        """结构化 JSON 汇总(配置/网格/接口计数/分阶段/定位诊断/逐频道结果)。"""
         moves = 0.0
         prev = (0.0, 0.0)
+        phases = {}
+        prev_vt = None
+
+        def ph(name):
+            return phases.setdefault(name or "unknown", {
+                "movement_distance_m": 0.0, "measure_count": 0,
+                "clear_attempt_count": 0, "clear_success_count": 0,
+                "virtual_time_s": 0.0})
+
         for a in self.actions:
             pos = a.get("payload", {}).get("position")
+            p = ph(a.get("phase"))
             if pos and a.get("path") in ("/measure", "/clear"):
-                moves += math.hypot(pos["x"]-prev[0], pos["y"]-prev[1])
+                leg = math.hypot(pos["x"]-prev[0], pos["y"]-prev[1])
+                moves += leg
+                p["movement_distance_m"] += leg
                 prev = (pos["x"], pos["y"])
+            if a.get("path") == "/measure":
+                p["measure_count"] += 1
+            elif a.get("path") == "/clear":
+                p["clear_attempt_count"] += 1
+                if a["response"].get("clear_result") == "success":
+                    p["clear_success_count"] += 1
+            vt = a.get("virtual_time_s")     # 虚拟时间按串行时间轴分段归属
+            if isinstance(vt, (int, float)):
+                if prev_vt is not None and vt >= prev_vt:
+                    p["virtual_time_s"] += vt - prev_vt
+                prev_vt = vt
+        for p in phases.values():
+            p["movement_distance_m"] = round(p["movement_distance_m"], 1)
+            p["virtual_time_s"] = round(p["virtual_time_s"], 1)
+
         clears = [a for a in self.actions if a["path"] == "/clear"]
         s = {
             "problem": 4,
             "team_no": self.robot_id,
             "base_url": self.base_url,
             "config": {"mesh_a": MESH_A, "mesh_margin": MESH_MARGIN,
-                       "on_way_delta": ON_WAY_DELTA, "r_clear": R_CLEAR},
+                       "on_way_delta": ON_WAY_DELTA, "r_clear": R_CLEAR,
+                       "r_guarantee": R_GUARANTEE, "use_neg_info": USE_NEG_INFO,
+                       "use_pso": USE_PSO, "do_verify": DO_VERIFY},
             "final_virtual_time_s": self.virtual_time,
             "total_actions": len(self.actions),
             "measure_count": sum(1 for a in self.actions if a["path"] == "/measure"),
@@ -122,11 +155,39 @@ class SimClient:
             "clear_failure_count": sum(1 for a in clears
                                        if a["response"].get("clear_result") != "success"),
             "movement_distance_m": round(moves, 1),
+            "phase_stats": phases,                  # 分阶段移动距离/动作数/虚拟时间
+            "locate_stats": self._locate_stats(),   # 定位方式与 Ω 半径统计
+            "clear_diag": self.clear_diag,          # 逐次清除的定位来源+Ω 半径(诊断)
             "robot": self.meta,
         }
         if self.error:
             s["error"] = self.error
         return s
+
+    def _locate_stats(self):
+        """汇总定位诊断: MEC(Ω 半径<=20m) 与最小二乘(交会角) 各占多少、半径分布。"""
+        hist = self.locate_history
+        mec = [h["omega_radius_m"] for h in hist
+               if h.get("method") == "mec" and h.get("omega_radius_m") is not None]
+        ls = [h for h in hist if h.get("method") == "ls"]
+        over = [h["omega_radius_m"] for h in ls if h.get("omega_radius_m") is not None]
+
+        def stat(v):
+            if not v:
+                return None
+            v = sorted(v)
+            return {"n": len(v), "min": round(v[0], 1), "median": round(v[len(v)//2], 1),
+                    "max": round(v[-1], 1)}
+        return {
+            "calls": len(hist),
+            "method_counts": {"mec": sum(1 for h in hist if h.get("method") == "mec"),
+                              "ls": len(ls),
+                              "fail": sum(1 for h in hist if h.get("method") is None)},
+            "omega_radius_m_when_mec": stat(mec),
+            "omega_radius_m_when_ls": stat(over),
+            "ls_cross_angle_deg": stat([h["cross_angle_deg"] for h in ls
+                                        if h.get("cross_angle_deg") is not None]),
+        }
 
     def _base(self, rid):
         return {"arena_id": self.arena_id, "robot_id": self.robot_id, "request_id": rid}
@@ -208,7 +269,9 @@ def clip_polygon(poly, n, c):
 
 
 def disk_polygon(R=R_AREA, m=72):
-    return [(R*math.cos(2*math.pi*k/m), R*math.sin(2*math.pi*k/m)) for k in range(m)]
+    """目标圆盘的外接 72 边形(与问题一/问题三口径一致: Rc = R/cos(pi/m) 不缩小真实圆域)。"""
+    Rc = R / math.cos(math.pi / m)
+    return [(Rc*math.cos(2*math.pi*k/m), Rc*math.sin(2*math.pi*k/m)) for k in range(m)]
 
 
 def feasible_region(bearings):
@@ -347,12 +410,43 @@ class Problem4Robot:
         self.ns_at_pos = {ch: [] for ch in range(1, N_CH+1)}  # no_signal 的点坐标(负信息用)
         self.cleared_count = 0
         self.onway_failed = set()   # 顺路清除失败过的频道: 不再顺路重试, 留给扫描后批量清除
+        self.locate_diag = {}       # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
         self.pts = tri_mesh(a=MESH_A, margin=MESH_MARGIN)
         self.tris = build_triangles(self.pts, a=MESH_A)
         self.cover_tris = covering_triangles(self.tris, self.pts)
 
     def log(self, *a):
         print("[robot4]", *a, flush=True)
+
+    # ---- 阶段标签 + 诊断记录(只记录, 不改变决策) ----
+    def _phase(self, name):
+        try:
+            self.c.phase = name
+        except Exception:
+            pass
+
+    @staticmethod
+    def _diag_list(client, name):
+        v = getattr(client, name, None)
+        if v is None:
+            v = []
+            try:
+                setattr(client, name, v)
+            except Exception:
+                pass
+        return v
+
+    def _note_locate(self, rec):
+        self.locate_diag[rec["ch"]] = rec
+        self._diag_list(self.c, "locate_history").append(rec)
+
+    def _note_clear(self, ch, x, y, src, omega_r, cross_ang, result):
+        """记录一次清除尝试的定位来源与当时 Ω 半径(供诊断与配对实验)。"""
+        self._diag_list(self.c, "clear_diag").append({
+            "ch": ch, "point": [round(x, 1), round(y, 1)], "src": src,
+            "omega_radius_m": omega_r, "cross_angle_deg": cross_ang,
+            "phase": getattr(self.c, "phase", None), "result": result,
+        })
 
     # ---- 覆盖率预估(离线) ----
     def mesh_stats(self):
@@ -361,55 +455,87 @@ class Problem4Robot:
             d += math.hypot(self.pts[i][0]-self.pts[i-1][0], self.pts[i][1]-self.pts[i-1][1])
         return len(self.pts), len(self.tris), len(self.cover_tris)
 
-    # ---- 路径: 最近邻 + 2-opt ----
+    # ---- 路径: 最近邻 + 2-opt(任务级, 携带网格编号; 含开放路径尾段反转) ----
     @staticmethod
-    def _two_opt(path):
-        def dd(a, b):
-            return math.hypot(a[0]-b[0], a[1]-b[1])
+    def _two_opt_tasks(tasks, start):
+        """对 [(key, x, y), ...] 做开放路径 2-opt。start 只作锚点, 不属于待访问集合。
+
+        j == n 的尾段反转必须纳入: 它把边 (v_{i-1},v_i) 换成 (v_{i-1},v_n),
+        否则开放路径永远无法倒转末段(实测 165/1000 场景还能再省)。
+        """
+        path = [(-1, start[0], start[1])] + [tuple(t) for t in tasks]
         n = len(path) - 1
+
+        def dd(a, b):
+            return math.hypot(a[1]-b[1], a[2]-b[2])
         imp = True
         while imp:
             imp = False
             for i in range(1, n):
-                for j in range(i+1, n):
-                    old = dd(path[i-1], path[i]) + dd(path[j], path[j+1])
-                    new = dd(path[i-1], path[j]) + dd(path[i], path[j+1])
+                for j in range(i+1, n+1):
+                    if j < n:
+                        old = dd(path[i-1], path[i]) + dd(path[j], path[j+1])
+                        new = dd(path[i-1], path[j]) + dd(path[i], path[j+1])
+                    else:                       # 尾段反转
+                        old = dd(path[i-1], path[i])
+                        new = dd(path[i-1], path[n])
                     if new < old - 1e-9:
                         path[i:j+1] = path[i:j+1][::-1]; imp = True
-        return path
+        return path[1:]
 
     def _order_points(self):
+        """网格点访问序列 [(mesh_index, x, y), ...]。
+
+        31 个网格点恰好各访问一次(锚点原点不再重复作为待访问点);
+        序列元素携带真实网格编号, 三角形证书必须用该编号而非访问次序。
+        """
         pts = self.pts
-        order = []; unv = set(range(len(pts))); cur = (0.0, 0.0)
+        start = (0.0, 0.0)
+        order = []; unv = set(range(len(pts))); cur = start
         while unv:
             k = min(unv, key=lambda i: math.hypot(pts[i][0]-cur[0], pts[i][1]-cur[1]))
             order.append(k); cur = pts[k]; unv.discard(k)
-        path = self._two_opt([(0.0, 0.0)] + [pts[k] for k in order])
-        return path
+        tasks = [(k, pts[k][0], pts[k][1]) for k in order]
+        return self._two_opt_tasks(tasks, start)
 
-    # ---- 快速定位(不移动) ----
-    def _locate_quick(self, ch):
+    # ---- 快速定位(不移动); 同时记录定位方式与 Ω(可行域最小覆盖圆)半径 ----
+    def _locate_quick(self, ch, tag=""):
+        """方式 'mec': Ω 最小覆盖圆半径 <= R_CLEAR; 'ls': 退化时改用最大交会角两示向交会。"""
         dirs = list(self.bearings[ch])
+        rec = {"ch": ch, "tag": tag, "n_dirs": len(dirs), "method": None,
+               "omega_radius_m": None, "cross_angle_deg": None, "point": None}
+        est = None
         if len(dirs) >= 2:
             poly = feasible_region(dirs)
             if len(poly) >= 3:
                 center, radius = minimal_enclosing_circle(poly)
+                rec["omega_radius_m"] = round(radius, 1)
                 if radius <= R_CLEAR:
-                    return center
-            bi = bj = 0; ba = -1
-            for i in range(len(dirs)):
-                for j in range(i+1, len(dirs)):
-                    a = crossing_angle(dirs[i][1], dirs[j][1])
-                    if a > ba:
-                        ba, bi, bj = a, i, j
-            if ba >= 30.0:
-                est = bearing_intersection([dirs[bi][0], dirs[bj][0]],
-                                           [dirs[bi][1], dirs[bj][1]])
-                if est is not None and self.USE_PSO:
-                    # 模块3: 用改进 PSO 在连续非凸空间精化位置
-                    est = self._pso_refine(ch, dirs, est)
-                return est
-        return None
+                    rec["method"] = "mec"
+                    est = center
+            if est is None:
+                bi = bj = 0; ba = -1
+                for i in range(len(dirs)):
+                    for j in range(i+1, len(dirs)):
+                        a = crossing_angle(dirs[i][1], dirs[j][1])
+                        if a > ba:
+                            ba, bi, bj = a, i, j
+                rec["cross_angle_deg"] = round(ba, 1)
+                if ba >= 30.0:
+                    rec["method"] = "ls"
+                    est = bearing_intersection([dirs[bi][0], dirs[bj][0]],
+                                               [dirs[bi][1], dirs[bj][1]])
+                    if est is not None and self.USE_PSO:
+                        # 模块3: 用改进 PSO 在连续非凸空间精化位置
+                        est = self._pso_refine(ch, dirs, est)
+        if est is not None:
+            rec["point"] = [round(est[0], 1), round(est[1], 1)]
+        self._note_locate(rec)
+        if tag:
+            self.log(f"定位[{tag}] 频道 {ch}: 方式={rec['method']} "
+                     f"Ω半径={rec['omega_radius_m']}m 交会角={rec['cross_angle_deg']}° "
+                     f"示向数={rec['n_dirs']}")
+        return est
 
     # ---- 已发现频道的冗余测量过滤: 当前点交会角有明显改善才值得测 ----
     def _worth_measuring(self, ch, qx, qy):
@@ -548,30 +674,41 @@ class Problem4Robot:
                 return (x0 + mid*ux, y0 + mid*uy)
         return (x0 + (lo+hi)/2.0*ux, y0 + (lo+hi)/2.0*uy)
 
-    # ---- 就近精定位(清除失败兜底) ----
-    def _homing_clear(self, ch, x, y):
-        # 1) 先在给定点直接试
-        okc, rc = self.c.clear(x, y, ch)
-        if okc and rc == "success":
-            self.state[ch] = "cleared"; self.cleared_count += 1
-            return
-        # 2) 对每条已有示向依次做二分归航(边界源可能只有个别方位稳健)
+    # ---- 就近精定位(清除失败兜底)。返回 True 仅当模拟器确实返回 success ----
+    def _homing_clear(self, ch, x, y, phase="homing", src="homing",
+                      omega_r=None, cross_ang=None, tried=False):
+        """tried=True 表示调用者已在 (x,y) 清除过一次并失败, 不再原地重复请求。"""
+        self._phase(phase)
+        if not tried:
+            okc, rc = self.c.clear(x, y, ch)
+            self._note_clear(ch, x, y, src, omega_r, cross_ang, rc if okc else "rejected")
+            if okc and rc == "success":
+                self.state[ch] = "cleared"; self.cleared_count += 1
+                return True
+        # 对每条已有示向依次做二分归航(边界源可能只有个别方位稳健)
         for (P, th) in list(self.bearings[ch]):
             bt = self._binary_homing(ch, P, th)
             if bt is None:
                 continue
+            if tried and math.hypot(bt[0]-x, bt[1]-y) < 1e-6:
+                continue                      # 归航点与失败点重合: 跳过重复请求
             okc, rc = self.c.clear(bt[0], bt[1], ch)
+            self._note_clear(ch, bt[0], bt[1], src+"|归航", omega_r, cross_ang,
+                             rc if okc else "rejected")
             if okc and rc == "success":
                 self.state[ch] = "cleared"; self.cleared_count += 1
-                return
+                return True
             for rad in (8.0, 15.0):
                 for k in range(6):
                     a = k * 60 * DEG
                     q = (bt[0] + rad*math.cos(a), bt[1] + rad*math.sin(a))
                     ok2, rc2 = self.c.clear(q[0], q[1], ch)
+                    self._note_clear(ch, q[0], q[1], src+"|邻域", omega_r, cross_ang,
+                                     rc2 if ok2 else "rejected")
                     if ok2 and rc2 == "success":
                         self.state[ch] = "cleared"; self.cleared_count += 1
-                        return
+                        return True
+        return False
 
     # ---- 主流程 ----
     def run(self):
@@ -581,11 +718,16 @@ class Problem4Robot:
         npts, ntri, ncov = self.mesh_stats()
         self.log(f"进入成功. 三角网格: {npts} 点 / {ntri} 三角形 / 需证伪 {ncov} 个")
 
-        path = self._order_points()
-        self.log(f"覆盖路径点数 {len(path)}")
+        seq = self._order_points()
+        # 覆盖路径自检: 31 个网格点必须恰好各访问一次(锚点不重复计入)
+        _seen = sorted(mi for mi, _, _ in seq)
+        path_ok = (_seen == list(range(len(self.pts))))
+        self.log(f"覆盖路径 {len(seq)} 个网格点(网格共 {len(self.pts)} 个): "
+                 f"{'每点恰好一次' if path_ok else '!! 编号重复/缺失 ' + str(_seen)}")
 
         # 保证层: 依序访问网格点, 蛇形扫描
-        for i, (px, py) in enumerate(path):
+        self._phase("mesh_scan")
+        for i, (mi, px, py) in enumerate(seq):
             order = list(range(1, N_CH+1)) if i % 2 == 0 else list(range(N_CH, 0, -1))
             for ch in order:
                 if self.state[ch] in ("excluded", "cleared"):
@@ -604,7 +746,7 @@ class Problem4Robot:
                     self.state[ch] = "found"
                     self.near_pos[ch] = (px, py)
                 elif res == "no_signal":
-                    self.ns_at[ch].add(i)
+                    self.ns_at[ch].add(mi)          # 真实网格编号(不是访问序号)
                     self.ns_at_pos[ch].append((px, py))
             # 三角形证书: 顶点均 no_signal 的三角形被证伪
             for ch in range(1, N_CH+1):
@@ -614,43 +756,59 @@ class Problem4Robot:
                     if all(all(v in self.ns_at[ch] for v in t) for t in self.cover_tris):
                         self.state[ch] = "excluded"
             # 受限顺路清除
-            if ON_WAY_DELTA is not None and i + 1 < len(path):
-                nxt = path[i+1]
+            if ON_WAY_DELTA is not None and i + 1 < len(seq):
+                nxt = (seq[i+1][1], seq[i+1][2])
+                self._phase("on_way")
                 for c2 in range(1, N_CH+1):
                     if self.state[c2] != "found" or c2 in self.onway_failed:
                         continue
-                    Q = self.near_pos[c2] if self.near_pos[c2] else self._locate_quick(c2)
-                    if Q is None:
-                        continue
+                    if self.near_pos[c2]:
+                        Q, qsrc, qr, qa = self.near_pos[c2], "near", None, None
+                    else:
+                        Q = self._locate_quick(c2, tag=f"顺路@{i}")
+                        dg = self.locate_diag.get(c2, {})
+                        qsrc = dg.get("method") or "none"
+                        qr, qa = dg.get("omega_radius_m"), dg.get("cross_angle_deg")
+                        if Q is None:
+                            continue
                     cur = c.position
                     dL = (math.hypot(Q[0]-cur[0], Q[1]-cur[1])
                           + math.hypot(Q[0]-nxt[0], Q[1]-nxt[1])
                           - math.hypot(cur[0]-nxt[0], cur[1]-nxt[1]))
                     if dL <= ON_WAY_DELTA:
                         ok, res = c.clear(Q[0], Q[1], c2)
+                        self._note_clear(c2, Q[0], Q[1], "on_way:"+qsrc, qr, qa,
+                                         res if ok else "rejected")
                         if ok and res == "success":
                             self.state[c2] = "cleared"; self.cleared_count += 1
-                            self.log(f"顺路清除: 频道 {c2} [{self.cleared_count}]")
+                            self.log(f"顺路清除: 频道 {c2}  来源={qsrc} [{self.cleared_count}]")
                         else:
                             # 顺路失败: 记入冷却, 不再在后续网格点反复顺路重试
                             self.onway_failed.add(c2)
-                            self._homing_clear(c2, Q[0], Q[1])
+                            self._homing_clear(c2, Q[0], Q[1], phase="on_way_homing",
+                                               src="on_way:"+qsrc, omega_r=qr,
+                                               cross_ang=qa, tried=True)
                             if self.state[c2] == "cleared":
                                 self.onway_failed.discard(c2)
+                self._phase("mesh_scan")
 
         self.log(f"扫描完成: 已发现 {sum(1 for s in self.state.values() if s=='found')}, "
                  f"已排除 {sum(1 for s in self.state.values() if s=='excluded')}")
 
-        # 状态层: 快速定位分类
+        # 状态层: 快速定位分类 (任务元组: ch, x, y, src, Ω半径, 交会角)
         clear_tasks = []; supp_tasks = []
         for ch in range(1, N_CH+1):
             if self.state[ch] != "found":
                 continue
             if self.near_pos[ch] is not None:
-                clear_tasks.append((ch, self.near_pos[ch][0], self.near_pos[ch][1])); continue
-            pt = self._locate_quick(ch)
+                clear_tasks.append((ch, self.near_pos[ch][0], self.near_pos[ch][1],
+                                    "near", None, None))
+                continue
+            pt = self._locate_quick(ch, tag="预筛")
+            dg = self.locate_diag.get(ch, {})
             if pt is not None:
-                clear_tasks.append((ch, pt[0], pt[1]))
+                clear_tasks.append((ch, pt[0], pt[1], dg.get("method") or "none",
+                                    dg.get("omega_radius_m"), dg.get("cross_angle_deg")))
             else:
                 cands = self._supplement_points(ch, c.position)
                 if self.USE_NEG_INFO and cands:
@@ -663,70 +821,86 @@ class Problem4Robot:
                 if cands:
                     supp_tasks.append((ch, cands[0][0], cands[0][1], cands))
 
-        # 批量补测(方位鲁棒: 第一个方位失败则换下一个)
+        # 批量补测(方位鲁棒: 第一个方位失败则换下一个)。任务按索引排序, 不按坐标查表
         if supp_tasks:
             self.log(f"补测任务 {len(supp_tasks)} 个(方位鲁棒)")
+            self._phase("supplement")
             spts = [(x, y) for _, x, y, _ in supp_tasks]
-            spos = {(x, y): (ch, cands) for ch, x, y, cands in supp_tasks}
             order = self._optimal_open_path(spts, tuple(c.position))
             for idx in order:
-                x, y = spts[idx]
-                ch, cands = spos[(x, y)]
-                got = False
+                ch, _, _, cands = supp_tasks[idx]
                 for (qx, qy) in cands:
                     ok, res, svd = c.measure(qx, qy, ch)
                     if ok and res == "near":
-                        clear_tasks.append((ch, qx, qy)); got = True; break
+                        clear_tasks.append((ch, qx, qy, "near", None, None)); break
                     if ok and res == "direction":
-                        self.bearings[ch].append(((qx, qy), svd)); got = True
-                        break
-                pt = self._locate_quick(ch)
+                        self.bearings[ch].append(((qx, qy), svd)); break
+                pt = self._locate_quick(ch, tag="补测后")
+                dg = self.locate_diag.get(ch, {})
                 if pt is not None:
-                    clear_tasks.append((ch, pt[0], pt[1]))
+                    clear_tasks.append((ch, pt[0], pt[1], dg.get("method") or "none",
+                                        dg.get("omega_radius_m"),
+                                        dg.get("cross_angle_deg")))
                 else:
                     # 补测失败(全在盲区)也必须兜底: 沿首示向二分归航
+                    self._phase("homing")
                     bt = self._binary_homing(ch, self.bearings[ch][0][0], self.bearings[ch][0][1])
                     if bt is not None:
-                        clear_tasks.append((ch, bt[0], bt[1]))
+                        clear_tasks.append((ch, bt[0], bt[1], "binary", None, None))
+                    self._phase("supplement")
 
-        # 清除(2-opt)
+        # 清除(任务级最近邻 + 2-opt, 任务始终携带频道编号)
         self.log(f"清除任务队列 {len(clear_tasks)} 个")
-        pts = [(x, y) for _, x, y in clear_tasks]
-        pos2ch = {(x, y): ch for ch, x, y in clear_tasks}
-        if pts:
-            order = []; unv = set(range(len(pts))); cur = c.position
-            while unv:
-                k = min(unv, key=lambda i: math.hypot(pts[i][0]-cur[0], pts[i][1]-cur[1]))
-                order.append(pts[k]); cur = pts[k]; unv.discard(k)
-            pathc = self._two_opt([tuple(c.position)] + order)
-            for (x, y) in pathc[1:]:
-                ch = pos2ch[(x, y)]
-                ok, res = c.clear(x, y, ch)
-                if ok and res == "success":
-                    self.state[ch] = "cleared"; self.cleared_count += 1
-                    self.log(f"清除成功: 频道 {ch} [{self.cleared_count}]")
-                else:
-                    self.log(f"清除未发现: 频道 {ch}, 就近精定位")
-                    self._homing_clear(ch, x, y)
+        self._phase("queue_clear")
+        ordered = []; unv = set(range(len(clear_tasks))); cur = c.position
+        while unv:
+            k = min(unv, key=lambda i: math.hypot(clear_tasks[i][1]-cur[0],
+                                                  clear_tasks[i][2]-cur[1]))
+            ordered.append(clear_tasks[k])
+            cur = (clear_tasks[k][1], clear_tasks[k][2]); unv.discard(k)
+        for (ch, x, y, src, omr, cra) in self._two_opt_tasks(ordered, c.position):
+            ok, res = c.clear(x, y, ch)
+            self._note_clear(ch, x, y, "queue:"+str(src), omr, cra, res if ok else "rejected")
+            if ok and res == "success":
+                self.state[ch] = "cleared"; self.cleared_count += 1
+                self.log(f"清除成功: 频道 {ch} 来源={src} Ω半径={omr}m [{self.cleared_count}]")
+            else:
+                self.log(f"清除未发现: 频道 {ch} 来源={src} Ω半径={omr}m, 就近精定位")
+                self._homing_clear(ch, x, y, phase="queue_homing", src="queue:"+str(src),
+                                   omega_r=omr, cross_ang=cra, tried=True)
+                self._phase("queue_clear")
+
+        # 退出前校验: 不应存在"既未清除、也未被排除"的频道
+        unresolved = [ch for ch in range(1, N_CH+1)
+                      if self.state[ch] not in ("cleared", "excluded")]
+        if unresolved:
+            self.log(f"警告: 仍有未解决频道 {unresolved}(可能未找到/未清除), "
+                     f"将在退出摘要中记录")
+        else:
+            self.log("20 个频道均已了结(已清除或已排除)")
 
         # 回填结构化元信息(写入 JSON 汇总)
         c.meta = {
             "mesh_points": len(self.pts),
             "mesh_triangles": len(self.tris),
             "cover_triangles": len(self.cover_tris),
+            "path_points": len(seq),
+            "certificate_index_ok": bool(path_ok),
             "cleared_count": self.cleared_count,
             "found_channels": sum(1 for s in self.state.values() if s == "found"),
             "excluded_channels": sum(1 for s in self.state.values() if s == "excluded"),
-            "unresolved_channels": sum(1 for s in self.state.values()
-                                      if s not in ("cleared", "excluded")),
+            "unresolved_channels": len(unresolved),
+            "unresolved_list": unresolved,
             "channels": {str(ch): {"state": self.state[ch],
                                    "bearings": len(self.bearings[ch]),
                                    "near": self.near_pos[ch] is not None,
-                                   "no_signal_points": len(self.ns_at[ch])}
+                                   "no_signal_points": len(self.ns_at[ch]),
+                                   "locate": self.locate_diag.get(ch)}
                          for ch in range(1, N_CH+1)},
         }
         # 模块5: 清除后多方向复核 —— 走一遍圆外见证点, 在那逐频道复核"已排除"结论
         if self.DO_VERIFY:
+            self._phase("verify")
             excl = [ch for ch in range(1, N_CH+1) if self.state[ch] == "excluded"]
             if excl:
                 witnesses = [((R_AREA + 300)*math.cos(a*DEG), (R_AREA + 300)*math.sin(a*DEG))
@@ -756,8 +930,10 @@ class Problem4Robot:
                                     self.state[ch] = "cleared"; self.cleared_count += 1
                                     self.log(f"复核后清除成功: 频道 {ch} [{self.cleared_count}]")
                                 else:
-                                    self._homing_clear(ch, Q[0], Q[1])
+                                    self._homing_clear(ch, Q[0], Q[1], phase="verify_homing",
+                                                       src="verify", tried=True)
 
+        self._phase("exit")
         self.log("调用 /exit ...")
         c.exit()
         self.log(f"结束, 清除 {self.cleared_count} 个干扰源")
