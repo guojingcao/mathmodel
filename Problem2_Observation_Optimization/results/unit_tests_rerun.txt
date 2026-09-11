@@ -1,0 +1,34 @@
+﻿python : test_candidate_validation (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_candidate_
+validation)
+At line:4 char:1
++ python -m unittest discover -s Problem2_Observation_Optimization\test ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (test_candidate_...ate_validation):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+非法中心、半径、步长和场地不足应明确报错。 ... ok
+test_candidates (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_candidates)
+圆周候选应有24个、无重复、半径1000m且位于场地。 ... ok
+test_dop (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_dop)
+共线方向DOP无穷，正交两站DOP为√2。 ... ok
+test_dop_is_only_baseline (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_dop_is_only_baselin
+e)
+DOP基线共享起点和候选集，但不调用或替换主优化结果。 ... ok
+test_error_validation (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_error_validation)
+测量误差维数必须与站点一致，站点不可与参考目标重合。 ... ok
+test_intersection_angle (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_intersection_angle)
+正交为90°，反向共线按条件角定义为0°。 ... ok
+test_optimizer_candidates_evaluated (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_optimizer
+_candidates_evaluated)
+第二轮应评价除起点外所有23个可达候选点。 ... ok
+test_optimizer_deterministic_and_nested (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_optim
+izer_deterministic_and_nested)
+相同输入结果完全可复现，选择无重复且面积包络随加点不扩大。 ... ok
+test_problem1_inheritance (Problem2_Observation_Optimization.tests.test_problem2.Problem2Tests.test_problem1_inheritanc
+e)
+适配器返回问题一RegionResult，真值包含且指标封装一致。 ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 2.465s
+
+OK
