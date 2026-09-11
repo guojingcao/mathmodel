@@ -75,17 +75,15 @@ python selfcheck.py
 
 `diag_robot.py` 用于定位漏清源（调试用）。
 
+## 日志（问题3 / 问题4 统一，单个文件）
 
+每次实机运行只生成**一个**日志文件：`logs/p3_log_<时间戳>.jsonl`（N 为题目号）。
 
-## 日志（问题3 / 问题4 统一）
-
-每次实机运行会在**本程序目录下的 `logs/`** 生成两个文件：
-
-- `p3_log_<时间戳>.jsonl` —— 逐条动作日志（`/enter` `/measure` `/clear` `/exit` 的请求、响应、`accepted`、`virtual_time_s`）；
-- `p3_log_<时间戳>.summary.json` —— **结构化 JSON 汇总**（两问同 schema）：
+- 前面的每一行是一个动作（`/enter` `/measure` `/clear` `/exit` 的请求、响应、`accepted`、`virtual_time_s`）；
+- **最后一行**是 `{"__summary__": ...}` 结构化汇总（两问同 schema）：
 
 ```json
-{
+{"__summary__": {
   "problem": 3,
   "team_no": "...", "base_url": "...",
   "config": { "...": "..." },
@@ -100,7 +98,17 @@ python selfcheck.py
     "found_channels": 0, "excluded_channels": 0,
     "channels": { "1": { "state": "cleared", "bearings": 2 } }
   }
-}
+}}
+```
+
+读取汇总示例：
+
+```python
+import json
+lines = [l for l in open("logs/p3_log_xxx.jsonl", encoding="utf-8")
+         if l.strip() and not l.startswith("#")]
+s = json.loads(lines[-1])["__summary__"]
+print(s["clear_success_count"], s["final_virtual_time_s"] / s["clear_success_count"])
 ```
 
 论文中「被清除干扰源个数」取 `clear_success_count`（不是 `clear_attempt_count`）；

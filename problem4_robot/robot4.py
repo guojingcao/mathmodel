@@ -664,12 +664,9 @@ def main(argv=None):
               f"移动 {s['movement_distance_m']:.0f}m, 检测 {s['measure_count']} 次, "
               f"清除 {s['clear_attempt_count']} 次(成功 {s['clear_success_count']})")
     finally:
+        # 单个 JSONL 文件: 逐条动作 + 末行 __summary__ 结构化汇总(不再另写第二份)
         p = client.dump_log(log_file)
-        print(f"[日志] 已写入 {p} (JSONL)")
-        js = str(p).rsplit(".", 1)[0] + ".summary.json"
-        with open(js, "w", encoding="utf-8") as f:
-            json.dump(client.build_summary(), f, ensure_ascii=False, indent=2)
-        print(f"[日志] 已写入 {js} (JSON 汇总)")
+        print(f"[日志] 已写入 {p}")
 
 
 if __name__ == "__main__":
