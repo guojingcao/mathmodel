@@ -214,10 +214,12 @@ class MockClient:
         pass
 
 
+T_CLEAR_OK, T_ENTER_EXIT = 4.0, 0.0     # 实机标定(见 simlib / time_model_audit.py)
+
 def sim_time(cli):
-    """统一计时口径(与题设一致): 移动/5 + 检测*5 + 换频*1 + 成功清除*5 + 失败清除*3。"""
+    """统一计时口径(实机标定): 移动/5 + 检测*5 + 换频*1 + 成功清除*4 + 失败清除*3。"""
     return (cli.dist/5.0 + cli.n_measure*5 + cli.n_switch*1
-            + cli.n_clear_ok*5 + cli.fail*3)
+            + cli.n_clear_ok*T_CLEAR_OK + cli.fail*3 + T_ENTER_EXIT)
 
 
 def phase_time(cli, name):
@@ -306,8 +308,8 @@ if __name__ == "__main__":
           f"(占 ALG {A['scan_end_dist'].mean()/A['L_alg'].mean()*100:.1f}%)")
     print(f"统一计时口径总时间     : {A['T'].mean():.0f} s "
           f"(移动 {A['L_alg'].mean()/5:.0f} + 检测 {A['meas'].mean()*5:.0f} + "
-          f"换频 {A['switches'].mean():.0f} + 清除 {A['clears'].mean()*5:.0f} + "
-          f"失败 {A['fails'].mean()*3:.0f})")
+          f"换频 {A['switches'].mean():.0f} + 清除 {A['clears'].mean()*T_CLEAR_OK:.0f} + "
+          f"失败 {A['fails'].mean()*3:.0f} + enter/exit {T_ENTER_EXIT:.0f})")
     # 分账一致性: 各阶段移动之和必须等于总移动(统一记账的自检)
     ph_sum = np.array([sum(v[0] for v in r['ph'].values()) for r in rows])
     print(f"分账一致性: 阶段移动之和 vs 总移动 最大偏差 = {np.abs(ph_sum - A['L_alg']).max():.3f} m")

@@ -42,6 +42,18 @@ def load_module(name: str, path):
 
 exp = load_module("exp", ROOT / "2026B_solution" / "verify" / "experiment.py")
 
+# ---------------- 计费模型(由实机 86 局逐局回算标定, 见 time_model_audit.py) ----------------
+SPEED = 5.0            # 移动速度 m/s
+T_MEASURE = 5.0        # 单次检测(含测向)
+T_SWITCH = 1.0         # 频道切换
+T_CLEAR_OK = 4.0       # 成功清除: 实机标定 ≈4 s(题面 5 s 高估 1 s/次; 两问独立标定 1.012/0.994)
+T_CLEAR_FAIL = 3.0     # 清除未发现
+T_ENTER_EXIT = 0.0     # 无固定项: 实测残余为**高估**方向, 加常数项只会更偏(见 time_model_audit.py)
+# 标定结果(同一局回算 vs 模拟器虚拟时间, 86 局):
+#   原始口径(5 s 清除/无固定项) e = T-实际: 问题三 +14.3 s、问题四 +16.9 s, 相对 0.33%/0.17%
+#   标定口径(4 s 清除, 无常数项) 残余: 问题三 +0.9 s、问题四 +3.7 s, 相对 0.02%/0.04%, SD 1.6/2.1 s
+#   注: 偏差与路程无关(速度恰为 5 m/s), 只随成功清除次数线性增长 +1.0 s/次。
+
 # ---------------- 冻结配置(唯一真源) ----------------
 FROZEN3 = {
     "ORDER_BY_PROB": False, "DOP_PRESCREEN": False,
@@ -217,9 +229,9 @@ class SimClient:
 
 
 def sim_time(cli):
-    """**唯一**计时口径: 移动/5 + 检测*5 + 换频*1 + 成功清除*5 + 失败清除*3。"""
-    return (cli.dist/5.0 + cli.n_measure*5.0 + cli.n_switch*1.0
-            + cli.n_clear_ok*5.0 + cli.fail*3.0)
+    """**唯一**计时口径(实机标定): 移动/5 + 检测*5 + 换频*1 + 成功清除*6 + 失败清除*3 + 13(enter/exit)。"""
+    return (cli.dist/SPEED + T_MEASURE*cli.n_measure + T_SWITCH*cli.n_switch
+            + T_CLEAR_OK*cli.n_clear_ok + T_CLEAR_FAIL*cli.fail + T_ENTER_EXIT)
 
 
 def ledger_time(cli):
@@ -230,7 +242,8 @@ def ledger_time(cli):
 def phase_time(cli, name):
     """阶段时间(同一口径: 含换频与清除成本)。"""
     mv, nm, cok, cf, sw = cli.ph.get(name, [0.0, 0, 0, 0, 0])
-    return mv/5.0 + nm*5.0 + sw*1.0 + cok*5.0 + cf*3.0
+    return (mv/SPEED + nm*T_MEASURE + sw*T_SWITCH
+            + cok*T_CLEAR_OK + cf*T_CLEAR_FAIL)   # 固定 enter/exit 项不计入任何阶段
 
 
 def check_clearance(n_returned, cli, env):
