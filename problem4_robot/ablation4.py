@@ -184,6 +184,96 @@ def paired_neighbor(n=100, seed=3026):
     return res
 
 
+def run_supp_cap(cap, n=400, seed=3026, ratios=(0.5, 1.0)):
+    """补测距离上限消融: 同一批随机案例(同 seed)下跑一个上限档。
+
+    逐案例记录: 清除率/是否漏清、总时间(含换频与清除)、总移动、检测、清除,
+    补测最近点距离(决策与执行)、归航 episode、被上限跳过的频道及其后续补回情况。
+    """
+    r4.Problem4Robot.SUPP_MAX_DIST = cap
+    out = {}
+    for pd in ratios:
+        rng = np.random.default_rng(seed)
+        rows = []
+        for _ in range(n):
+            env = exp.Env(rng, directional=True, p_dir=pd)
+            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                k = rb.run()
+            T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
+                 + cli.n_clear_ok*5 + cli.fail*3)
+            sup = list(getattr(cli, "supp_diag", []))
+            hom = list(getattr(cli, "homing_diag", []))
+            sk = set(rb.supp_skipped)
+            rows.append(dict(
+                cr=k/env.n_src, miss=1 if k < env.n_src else 0, n_src=env.n_src,
+                dist=cli.dist, meas=cli.n_measure, T=T, fail=cli.fail,
+                sup_dec=sum(1 for d in sup if d["action"] == "measure"),
+                sup_exec=sum(1 for d in sup if d["action"] == "exec"),
+                sup_skip=sum(1 for d in sup if d["action"] == "skip"),
+                sup_max_m=max([d["nearest_m"] for d in sup
+                               if d["action"] in ("measure", "exec")] or [0.0]),
+                sup_mean_m=(np.mean([d["nearest_m"] for d in sup
+                                     if d["action"] in ("measure", "exec")])
+                            if any(d["action"] in ("measure", "exec") for d in sup) else 0.0),
+                hom_ep=len(hom), hom_moves=sum(e.get("episode_moves_m", 0.0) for e in hom),
+                sk_ch=len(sk),
+                sk_ok=sum(1 for ch in sk if rb.state[ch] == "cleared"),
+            ))
+        out[pd] = rows
+    return out
+
+
+def paired_supp_cap(n=400, seed=3026):
+    """补测距离上限四臂配对实验(既有流程内的调度阈值, 默认 None 不变)。"""
+    arms = [("当前: 无上限", None), ("上限 1500 m", 1500.0),
+            ("上限 2500 m", 2500.0), ("上限 3500 m", 3500.0)]
+    res = {}
+    for name, cap in arms:
+        t0 = time.time()
+        res[name] = run_supp_cap(cap, n, seed)
+        print(f"  已跑 {name}  [{time.time()-t0:.0f}s]", flush=True)
+    base = res[arms[0][0]]
+    print(f"\n[补测距离上限消融] n={n} 案例/档, 同 seed 同场景配对")
+    print("硬约束: 任何档只要出现更多漏清或未解决频道, 即使平均时间下降也不采用")
+    for pd in (0.5, 1.0):
+        print(f"\n=== 定向比例 {pd*100:.0f}% ===")
+        bo = np.array([r["T"] for r in base[pd]])
+        thr = float(np.percentile(bo, 95))
+        hdr = "%-15s%8s%7s%8s%8s%8s%8s%9s%9s%11s%10s%8s%9s%9s" % (
+            "配置", "全清率", "漏清例", "平均(s)", "P90", "P95", "P99", "最大",
+            "长尾例数", "Δ时间95%CI", "补测距离", "跳过", "归航移动", "补回率")
+        print(hdr); print("-" * len(hdr))
+        for name, _ in arms:
+            rows = res[name][pd]
+            T = np.array([r["T"] for r in rows])
+            cr = np.mean([r["cr"] for r in rows])
+            miss = sum(r["miss"] for r in rows)
+            supd = [r["sup_mean_m"] for r in rows if r["sup_exec"] or r["sup_dec"]]
+            sk = sum(r["sk_ch"] for r in rows)
+            skok = sum(r["sk_ok"] for r in rows)
+            tail = int((T > thr).sum())          # 超过基线 P95 的案例数(长尾计数)
+            s = "%-15s%7.1f%%%7d%8.0f%8.0f%8.0f%8.0f%9.0f%9d" % (
+                name, cr*100, miss, T.mean(), np.percentile(T, 90),
+                np.percentile(T, 95), np.percentile(T, 99), T.max(), tail)
+            if name == arms[0][0]:
+                s += "%11s" % "—"
+            else:
+                d = T - bo
+                se = d.std(ddof=1)/math.sqrt(len(d))
+                s += "%11s" % f"[{d.mean()-1.96*se:.0f},{d.mean()+1.96*se:.0f}]"
+            s += "%10s%8.2f%9.0f%9s" % (
+                f"{np.mean(supd):.0f}m" if supd else "—",
+                np.mean([r["sup_skip"] for r in rows]),
+                np.mean([r["hom_moves"] for r in rows]),
+                f"{100.0*skok/sk:.0f}%" if sk else "—")
+            print(s)
+        print(f"  (长尾例数 = 超过基线 P95 = {thr:.0f}s 的案例数; 基线 P95 以上共 "
+              f"{int((bo > thr).sum())} 例)")
+    r4.Problem4Robot.SUPP_MAX_DIST = None    # 复位默认(正式策略不变)
+    return res
+
+
 def run_onway(delta, n=30, seed=3026, ratios=(0.5, 1.0)):
     """同一批随机案例(同 seed)下跑一个顺路清除阈值, 返回逐案例明细用于配对比较。
 
@@ -250,6 +340,9 @@ def paired_onway(n=30, seed=3026, arms=(200.0, 300.0, 500.0, 800.0, None)):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--supp-cap":
+        paired_supp_cap(int(sys.argv[2]) if len(sys.argv) > 2 else 400)
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] == "--neighbor":
         paired_neighbor(int(sys.argv[2]) if len(sys.argv) > 2 else 100)
         sys.exit(0)

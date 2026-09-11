@@ -113,6 +113,31 @@ def verify_summary_schema():
     return not missing and not miss_cfg
 
 
+def verify_determinism(n_cases=20, seed=777):
+    """稳定性标准第 5 条: 固定种子重复运行结果必须完全一致(逐案例逐指标比对)。"""
+    a = run_mc(n_cases, 1.0, diag=True)
+    b = run_mc(n_cases, 1.0, diag=True)
+    keys = ("cr", "L", "n", "f")
+    same = all(abs(a[k] - b[k]) < 1e-12 for k in keys)
+    # 逐案例比对(不仅是均值): 用同 seed 单独重跑两遍取明细
+    def cases():
+        rng = np.random.default_rng(seed)
+        out = []
+        for _ in range(n_cases):
+            env = exp.Env(rng, directional=True, p_dir=1.0)
+            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                k = rb.run()
+            out.append((k, round(cli.dist, 6), cli.n_measure, cli.n_clear,
+                        tuple(sorted(rb.supp_skipped))))
+        return out
+    c1, c2 = cases(), cases()
+    same_case = c1 == c2
+    print(f"固定种子一致性: 均值一致 = {same}; 逐案例一致 = {same_case} "
+          f"({n_cases} 例, seed={seed})")
+    return same and same_case
+
+
 class MockClient:
     def __init__(self, env):
         self.env = env; self.position = (0.0, 0.0); self.channel = 1
@@ -203,14 +228,16 @@ if __name__ == "__main__":
     import sys as _sys
     args = [a for a in _sys.argv[1:] if not a.startswith("--")]
     if "--cert" in _sys.argv:
-        # 只做"索引映射 + 证书正确性 + 摘要 schema"复核(回归用)
+        # 只做"索引映射 + 证书正确性 + 摘要 schema + 固定种子一致性"复核(回归用)
         ok1 = verify_path_index()
         ok3 = verify_summary_schema()
+        ok4 = verify_determinism()
         ok2 = verify_certificate(int(args[0]) if args else 60)
         print(f"结论: 索引映射 {'通过' if ok1 else '不通过'}, "
               f"摘要 schema {'通过' if ok3 else '不通过'}, "
+              f"固定种子 {'通过' if ok4 else '不通过'}, "
               f"证书 {'通过' if ok2 else '不通过'}")
-        _sys.exit(0 if (ok1 and ok2 and ok3) else 1)
+        _sys.exit(0 if (ok1 and ok2 and ok3 and ok4) else 1)
     n = int(args[0]) if args else 30
     margin = float(args[1]) if len(args) > 1 else None
     diag = "--diag" in _sys.argv

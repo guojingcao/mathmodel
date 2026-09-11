@@ -57,6 +57,7 @@ class SimClient:
         self.n_clear_ok = 0
         self.n_switch = 0
         self.homing_diag = []     # 机器人回填: 每次归航 episode 的开销与结果
+        self.supp_diag = []       # 机器人回填: 每次补测决策/执行(距离与动作)
 
     def _new_req_id(self, tag):
         self._seq += 1
@@ -157,7 +158,8 @@ class SimClient:
                        "use_pso": getattr(Problem4Robot, "USE_PSO", None),
                        "do_verify": getattr(Problem4Robot, "DO_VERIFY", None),
                        "neighbor_rings": list(getattr(Problem4Robot,
-                                                      "NEIGHBOR_RINGS", ()))},
+                                                      "NEIGHBOR_RINGS", ())),
+                       "supp_max_dist": getattr(Problem4Robot, "SUPP_MAX_DIST", None)},
             "final_virtual_time_s": self.virtual_time,
             "total_actions": len(self.actions),
             "measure_count": sum(1 for a in self.actions if a["path"] == "/measure"),
@@ -172,6 +174,8 @@ class SimClient:
             "clear_diag": self.clear_diag,          # 逐次清除的定位来源+Ω 半径(诊断)
             "homing_stats": self._homing_stats(),    # 归航 episode 汇总(邻域试探消融口径)
             "homing_diag": self.homing_diag,         # 归航 episode 明细
+            "supp_stats": self._supp_stats(),        # 补测决策汇总(距离上限口径)
+            "supp_diag": self.supp_diag,             # 补测决策明细
             "robot": self.meta,
         }
         if self.error:
@@ -240,6 +244,35 @@ class SimClient:
                                             if tried_multi else None),
             "per_hard_source": {"n": len(hard), "moves_m": avg(moved),
                                 "clears": avg(clears), "time_s": avg(times)},
+        }
+
+    def _supp_stats(self):
+        """补测决策汇总: 最近补测点距离分布、被上限跳过的次数与后续补回率。"""
+        d = self.supp_diag
+        if not d:
+            return {"decisions": 0}
+        def stat(v):
+            if not v:
+                return None
+            v = sorted(v)
+            return {"n": len(v), "median": round(v[len(v)//2], 1), "max": round(v[-1], 1)}
+        m = self.meta or {}
+        sk_ch = m.get("supp_skipped_channels") or []
+        return {
+            "cap_m": getattr(Problem4Robot, "SUPP_MAX_DIST", None),
+            "decisions": len(d),
+            "skipped_by_cap": sum(1 for x in d if x["action"] == "skip"),
+            "executed": sum(1 for x in d if x["action"] == "exec"),
+            "nearest_m_when_measure": stat([x["nearest_m"] for x in d
+                                            if x["action"] == "measure"]),
+            "nearest_m_when_exec": stat([x["nearest_m"] for x in d
+                                         if x["action"] == "exec"]),
+            "nearest_m_when_skip": stat([x["nearest_m"] for x in d
+                                         if x["action"] == "skip"]),
+            "skipped_channels": len(sk_ch),
+            "skipped_recovered": m.get("supp_skipped_recovered"),
+            "skipped_recovered_rate": (round(m.get("supp_skipped_recovered", 0)/len(sk_ch), 4)
+                                       if sk_ch else None),
         }
 
     def _base(self, rid):
@@ -465,6 +498,9 @@ class Problem4Robot:
     DO_VERIFY = False        # 模块5: 清除后对"已排除"频道做多方向复核
     # 归航失败后的邻域试探圈: (8,15) = 既有流程; (8,) / (15,) = 仅保留一圈; () = 取消试探
     NEIGHBOR_RINGS = (8.0, 15.0)
+    # 补测距离上限(米): None = 无上限(既有流程); 数值 = 最近补测点超过该距离就跳过补测,
+    # 直接走已有的"沿首示向二分归航"(只加调度阈值, 不改覆盖/定位模型)。
+    SUPP_MAX_DIST = None
 
     def __init__(self, client):
         self.c = client
@@ -476,6 +512,7 @@ class Problem4Robot:
         self.cleared_count = 0
         self.onway_failed = set()   # 顺路清除失败过的频道: 不再顺路重试, 留给扫描后批量清除
         self.locate_diag = {}       # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
+        self.supp_skipped = set()   # 因补测距离上限被跳过、改走二分归航的频道
         self.pts = tri_mesh(a=MESH_A, margin=MESH_MARGIN)
         self.tris = build_triangles(self.pts, a=MESH_A)
         self.cover_tris = covering_triangles(self.tris, self.pts)
@@ -511,6 +548,14 @@ class Problem4Robot:
             "ch": ch, "point": [round(x, 1), round(y, 1)], "src": src,
             "omega_radius_m": omega_r, "cross_angle_deg": cross_ang,
             "phase": getattr(self.c, "phase", None), "result": result,
+        })
+
+    def _note_supp(self, ch, dist_m, n_cands, action):
+        """记录一次补测决策/执行: 最近补测点距离、候选数、动作(measure/skip/exec)。"""
+        self._diag_list(self.c, "supp_diag").append({
+            "ch": ch, "nearest_m": round(dist_m, 1), "n_candidates": n_cands,
+            "action": action, "cap_m": self.SUPP_MAX_DIST,
+            "phase": getattr(self.c, "phase", None),
         })
 
     # ---- 覆盖率预估(离线) ----
@@ -923,7 +968,21 @@ class Problem4Robot:
                         S0 = (b[0][0] + 500*math.cos(b[1]*DEG), b[0][1] + 500*math.sin(b[1]*DEG))
                     cands = self._neg_info_filter(ch, cands, S0)
                 if cands:
-                    supp_tasks.append((ch, cands[0][0], cands[0][1], cands))
+                    d0 = math.hypot(cands[0][0]-c.position[0], cands[0][1]-c.position[1])
+                    cap = self.SUPP_MAX_DIST
+                    if cap is not None and d0 > cap:
+                        # 远距离补测: 跳过, 直接走已有的沿首示向二分归航(不新增算法)
+                        self._note_supp(ch, d0, len(cands), "skip")
+                        self.supp_skipped.add(ch)
+                        self._phase("homing")
+                        bt = self._binary_homing(ch, self.bearings[ch][0][0],
+                                                 self.bearings[ch][0][1])
+                        if bt is not None:
+                            clear_tasks.append((ch, bt[0], bt[1], "binary:cap", None, None))
+                        self._phase("mesh_scan")
+                    else:
+                        self._note_supp(ch, d0, len(cands), "measure")
+                        supp_tasks.append((ch, cands[0][0], cands[0][1], cands))
 
         # 批量补测(方位鲁棒: 第一个方位失败则换下一个)。任务按索引排序, 不按坐标查表
         if supp_tasks:
@@ -933,7 +992,10 @@ class Problem4Robot:
             order = self._optimal_open_path(spts, tuple(c.position))
             for idx in order:
                 ch, _, _, cands = supp_tasks[idx]
-                for (qx, qy) in cands:
+                for k, (qx, qy) in enumerate(cands):
+                    if k == 0:
+                        self._note_supp(ch, math.hypot(qx-c.position[0], qy-c.position[1]),
+                                        len(cands), "exec")
                     ok, res, svd = c.measure(qx, qy, ch)
                     if ok and res == "near":
                         clear_tasks.append((ch, qx, qy, "near", None, None)); break
@@ -995,6 +1057,9 @@ class Problem4Robot:
             "excluded_channels": sum(1 for s in self.state.values() if s == "excluded"),
             "unresolved_channels": len(unresolved),
             "unresolved_list": unresolved,
+            "supp_skipped_channels": sorted(self.supp_skipped),
+            "supp_skipped_recovered": sum(1 for ch in self.supp_skipped
+                                          if self.state[ch] == "cleared"),
             "channels": {str(ch): {"state": self.state[ch],
                                    "bearings": len(self.bearings[ch]),
                                    "near": self.near_pos[ch] is not None,
