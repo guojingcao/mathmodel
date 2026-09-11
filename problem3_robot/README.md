@@ -75,3 +75,35 @@ python selfcheck.py
 
 `diag_robot.py` 用于定位漏清源（调试用）。
 
+
+
+## 日志（问题3 / 问题4 统一）
+
+每次实机运行会在**本程序目录下的 `logs/`** 生成两个文件：
+
+- `p3_log_<时间戳>.jsonl` —— 逐条动作日志（`/enter` `/measure` `/clear` `/exit` 的请求、响应、`accepted`、`virtual_time_s`）；
+- `p3_log_<时间戳>.summary.json` —— **结构化 JSON 汇总**（两问同 schema）：
+
+```json
+{
+  "problem": 3,
+  "team_no": "...", "base_url": "...",
+  "config": { "...": "..." },
+  "final_virtual_time_s": 0.0,
+  "movement_distance_m": 0.0,
+  "measure_count": 0,
+  "clear_attempt_count": 0,
+  "clear_success_count": 0,
+  "clear_failure_count": 0,
+  "robot": {
+    "cleared_count": 0,
+    "found_channels": 0, "excluded_channels": 0,
+    "channels": { "1": { "state": "cleared", "bearings": 2 } }
+  }
+}
+```
+
+论文中「被清除干扰源个数」取 `clear_success_count`（不是 `clear_attempt_count`）；
+「平均定位清除时间」= `final_virtual_time_s / clear_success_count`。
+
+> 日志文件默认**不入 git**（见根目录 `.gitignore`），只保留在本地 `logs/` 便于分析。

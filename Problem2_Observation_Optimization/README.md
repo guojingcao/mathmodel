@@ -47,6 +47,7 @@ python Problem2_Observation_Optimization/main.py --repetitions 2 --evaluation-re
 - `results/paired_dop_comparison.csv`：本文Ω布局相对DOP诊断基线的直接配对差。
 - `results/problem2_analysis.md`：由实际数据自动生成的论文分析。
 - `results/validation.json`、`unit_tests.txt`：验证证据。
+- `results/visual_review.md`：PNG与PDF回读的逐图视觉复核记录。
 - 图件位于 `../origin_figures/Problem2_Observation_Optimization/`，每图PDF、SVG及600dpi PNG。
 
 问题一面积是网格内外包中点；直径是内包近似并带外包上界；覆盖半径使用安全外包最小圆。完整定义见问题一 `MODEL.md`。本工程的2000 m相邻移动上限是可配置实验条件，不替代官方速度、时间或障碍物规则。
