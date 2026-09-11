@@ -27,6 +27,7 @@ EPS = 1.0 * DEG
 R_AREA = 1800.0
 R_CLEAR = 20.0
 R_NEAR = 5.0
+R_GUARANTEE = 1000.0     # 有效接收半径下限(1000m 内必可收到, 三角证书用)
 N_CH = 20
 MESH_A = 900.0           # 三角网格边长(<=1000 保证接收; 实测 900 最快且全覆盖)
 MESH_MARGIN = 800.0      # 网格向圆外延伸量(实测 800 起才 100% 覆盖圆盘)
@@ -307,12 +308,18 @@ def covering_triangles(tris, pts):
 
 # ==================== 机器人 ====================
 class Problem4Robot:
+    # ===== 外部改进模块开关(默认关, 用于消融实验) =====
+    USE_NEG_INFO = False     # 模块1+4: 用 no_signal 负信息收缩联合可行域 + 指向状态
+    USE_PSO = False          # 模块3: 定位阶段用改进 PSO 精化位置
+    DO_VERIFY = False        # 模块5: 清除后对"已排除"频道做多方向复核
+
     def __init__(self, client):
         self.c = client
         self.state = {ch: None for ch in range(1, N_CH+1)}   # None/found/excluded/cleared
         self.bearings = {ch: [] for ch in range(1, N_CH+1)}
         self.near_pos = {ch: None for ch in range(1, N_CH+1)}
         self.ns_at = {ch: set() for ch in range(1, N_CH+1)}   # no_signal 的点索引
+        self.ns_at_pos = {ch: [] for ch in range(1, N_CH+1)}  # no_signal 的点坐标(负信息用)
         self.cleared_count = 0
         self.onway_failed = set()   # 顺路清除失败过的频道: 不再顺路重试, 留给扫描后批量清除
         self.pts = tri_mesh(a=MESH_A, margin=MESH_MARGIN)
@@ -371,8 +378,12 @@ class Problem4Robot:
                     if a > ba:
                         ba, bi, bj = a, i, j
             if ba >= 30.0:
-                return bearing_intersection([dirs[bi][0], dirs[bj][0]],
-                                            [dirs[bi][1], dirs[bj][1]])
+                est = bearing_intersection([dirs[bi][0], dirs[bj][0]],
+                                           [dirs[bi][1], dirs[bj][1]])
+                if est is not None and self.USE_PSO:
+                    # 模块3: 用改进 PSO 在连续非凸空间精化位置
+                    est = self._pso_refine(ch, dirs, est)
+                return est
         return None
 
     # ---- 已发现频道的冗余测量过滤: 当前点交会角有明显改善才值得测 ----
@@ -389,6 +400,86 @@ class Problem4Robot:
             if crossing_angle(thQ, ti) >= 30.0:
                 return True
         return False
+
+    # ---- 模块1+4: 负信息 -> 联合可行域(位置×指向)与指向状态 ----
+    def _pointing_arcs(self, ch, S):
+        """给定位置估计 S, 返回 (可行指向集合, 参考指向)。
+
+        约束(全部为 180° 圆弧):
+          direction at P  : 指向须覆盖 P  -> 指向 ∈ Arc(S->P)
+          no_signal at P  : 若 |S-P| <= 1000(1000m 内必可收), 则指向不得覆盖 P
+          等价地: 用 72 个 5° 分箱的布尔数组表示指向的可行集合。
+        """
+        import math as _m
+        bins = 72
+        feas = [True] * bins
+        ref = None
+        for (P, th) in self.bearings[ch]:
+            a = _m.degrees(_m.atan2(P[1]-S[1], P[0]-S[0])) % 360   # S->P 方向
+            for k in range(bins):
+                dk = k * (360.0 / bins)
+                diff = abs((dk - a + 180) % 360 - 180)
+                if diff > 90.0:            # 该指向不覆盖 P
+                    feas[k] = False
+            ref = a if ref is None else ref
+        for P in self.ns_at_pos[ch]:
+            if _m.hypot(P[0]-S[0], P[1]-S[1]) <= R_GUARANTEE:
+                a = _m.degrees(_m.atan2(P[1]-S[1], P[0]-S[0])) % 360
+                for k in range(bins):
+                    dk = k * (360.0 / bins)
+                    diff = abs((dk - a + 180) % 360 - 180)
+                    if diff <= 90.0:       # 该指向覆盖了 P, 但 P 无信号 -> 排除
+                        feas[k] = False
+        return feas, ref
+
+    def _neg_info_filter(self, ch, cands, S):
+        """用负信息给候选补测点排序: 优先选"大概率落在源覆盖半平面内"的点。"""
+        feas, _ = self._pointing_arcs(ch, S)
+        ok = [k for k in range(len(feas)) if feas[k]]
+        if not ok:
+            return cands                      # 无可行指向 -> 不做过滤
+        import math as _m
+        def score(q):
+            a = _m.degrees(_m.atan2(q[1]-S[1], q[0]-S[0])) % 360
+            hit = 0
+            for k in ok:
+                dk = k * 5.0
+                if abs((a - dk + 180) % 360 - 180) <= 90.0:
+                    hit += 1
+            return -hit
+        return sorted(cands, key=score)
+
+    # ---- 模块3: 改进 PSO 精化位置(连续非凸) ----
+    @staticmethod
+    def _pso_refine(ch, dirs, init, iters=40, n_p=24, seed=7):
+        """以 (两站交会残差² + 位置与可行域质心的距离惩罚) 为目标做 PSO。"""
+        import random
+        rnd = random.Random(seed)
+        def cost(p):
+            s = 0.0
+            for (P, th) in dirs:
+                a = math.degrees(math.atan2(p[1]-P[1], p[0]-P[0])) % 360
+                d = abs(a - th) % 360; d = min(d, 360-d)
+                s += d*d
+            s += 1e-4 * math.hypot(p[0]-init[0], p[1]-init[1])
+            return s
+        P = [[init[0] + rnd.uniform(-200, 200), init[1] + rnd.uniform(-200, 200)] for _ in range(n_p)]
+        V = [[rnd.uniform(-30, 30), rnd.uniform(-30, 30)] for _ in range(n_p)]
+        pb = [p[:] for p in P]; pbv = [cost(p) for p in P]
+        gi = min(range(n_p), key=lambda i: pbv[i]); gb = pb[gi][:]; gv = pbv[gi]
+        for _ in range(iters):
+            for i in range(n_p):
+                for d in (0, 1):
+                    V[i][d] = (0.5*V[i][d] + 1.2*rnd.random()*(pb[i][d]-P[i][d])
+                               + 1.2*rnd.random()*(gb[d]-P[i][d]))
+                    V[i][d] = max(-200, min(200, V[i][d]))
+                    P[i][d] = max(-2000, min(2000, P[i][d] + V[i][d]))
+                f = cost(P[i])
+                if f < pbv[i]:
+                    pbv[i] = f; pb[i] = P[i][:]
+                    if f < gv:
+                        gv = f; gb = P[i][:]
+        return (gb[0], gb[1])
 
     # ---- 定向鲁棒补测: 多方位依次尝试 ----
     def _supplement_points(self, ch, toward):
@@ -489,6 +580,7 @@ class Problem4Robot:
                     self.near_pos[ch] = (px, py)
                 elif res == "no_signal":
                     self.ns_at[ch].add(i)
+                    self.ns_at_pos[ch].append((px, py))
             # 三角形证书: 顶点均 no_signal 的三角形被证伪
             for ch in range(1, N_CH+1):
                 if self.state[ch] in ("excluded", "cleared"):
@@ -536,6 +628,13 @@ class Problem4Robot:
                 clear_tasks.append((ch, pt[0], pt[1]))
             else:
                 cands = self._supplement_points(ch, c.position)
+                if self.USE_NEG_INFO and cands:
+                    # 模块1+4: 用负信息推断指向, 优先选"大概率在覆盖内"的补测点
+                    S0 = self._locate_quick(ch)
+                    if S0 is None:
+                        b = self.bearings[ch][0]
+                        S0 = (b[0][0] + 500*math.cos(b[1]*DEG), b[0][1] + 500*math.sin(b[1]*DEG))
+                    cands = self._neg_info_filter(ch, cands, S0)
                 if cands:
                     supp_tasks.append((ch, cands[0][0], cands[0][1], cands))
 
@@ -601,6 +700,39 @@ class Problem4Robot:
                                    "no_signal_points": len(self.ns_at[ch])}
                          for ch in range(1, N_CH+1)},
         }
+        # 模块5: 清除后多方向复核 —— 走一遍圆外见证点, 在那逐频道复核"已排除"结论
+        if self.DO_VERIFY:
+            excl = [ch for ch in range(1, N_CH+1) if self.state[ch] == "excluded"]
+            if excl:
+                witnesses = [((R_AREA + 300)*math.cos(a*DEG), (R_AREA + 300)*math.sin(a*DEG))
+                             for a in (45.0, 135.0, 225.0, 315.0)]
+                self.log(f"多方向复核: {len(excl)} 个已排除频道, 见证点 {len(witnesses)} 个")
+                for (wx, wy) in witnesses:
+                    for ch in excl:
+                        if self.state[ch] != "excluded":
+                            continue
+                        ok, res, svd = c.measure(wx, wy, ch)
+                        if ok and res == "near":
+                            self.state[ch] = "found"; self.near_pos[ch] = (wx, wy)
+                            okc, rc = c.clear(wx, wy, ch)
+                            if okc and rc == "success":
+                                self.state[ch] = "cleared"; self.cleared_count += 1
+                                self.log(f"复核后清除成功: 频道 {ch} [{self.cleared_count}]")
+                        elif ok and res == "direction":
+                            self.state[ch] = "found"
+                            self.bearings[ch].append(((wx, wy), svd))
+                            self.log(f"复核发现频道 {ch} 有信号, 转定位清除")
+                            Q = self._locate_quick(ch)
+                            if Q is None:
+                                Q = self._binary_homing(ch, (wx, wy), svd)
+                            if Q is not None:
+                                okc, rc = c.clear(Q[0], Q[1], ch)
+                                if okc and rc == "success":
+                                    self.state[ch] = "cleared"; self.cleared_count += 1
+                                    self.log(f"复核后清除成功: 频道 {ch} [{self.cleared_count}]")
+                                else:
+                                    self._homing_clear(ch, Q[0], Q[1])
+
         self.log("调用 /exit ...")
         c.exit()
         self.log(f"结束, 清除 {self.cleared_count} 个干扰源")

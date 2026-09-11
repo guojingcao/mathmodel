@@ -43,11 +43,14 @@ python Problem2_Observation_Optimization/main.py --repetitions 2 --evaluation-re
 - `results/selected_layouts.json`：候选集、本文布局和DOP布局坐标/编号。
 - `results/observations.jsonl`：每次实验的问题一完整输入。
 - `results/group_statistics.csv`、`paired_layout_comparisons.csv`：分组与配对结果。
-- `results/paired_dop_comparison.csv`：本文Ω贪心相对DOP基线的直接配对差与区间。
 - `results/paired_dop_comparison.csv`：本文Ω布局相对DOP诊断基线的直接配对差。
 - `results/problem2_analysis.md`：由实际数据自动生成的论文分析。
 - `results/validation.json`、`unit_tests.txt`：验证证据。
 - `results/visual_review.md`：PNG与PDF回读的逐图视觉复核记录。
+- `paper/problem2_section.tex`：可直接纳入论文的问题二正文。
+- `paper/problem2_tables.tex`：由正式结果整理的五张三线表。
+- `paper/compile_check.tex`：正文与三线表的独立编译检查入口。
+- `results/problem1_problem2_consistency.md`：问题一、问题二模型和数据口径衔接检查。
 - 图件位于 `../origin_figures/Problem2_Observation_Optimization/`，每图PDF、SVG及600dpi PNG。
 
 问题一面积是网格内外包中点；直径是内包近似并带外包上界；覆盖半径使用安全外包最小圆。完整定义见问题一 `MODEL.md`。本工程的2000 m相邻移动上限是可配置实验条件，不替代官方速度、时间或障碍物规则。
