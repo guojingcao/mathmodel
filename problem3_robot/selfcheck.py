@@ -33,13 +33,78 @@ class MockClient:
 
 import math
 
+def patho_sources(rng, kind, n):
+    """构造极端/病理场景的全向源集合(随机采样很难碰到的几何)。"""
+    ch = [int(c) for c in rng.choice(np.arange(1, robotmod.N_CH+1), size=n, replace=False)]
+    out = []
+    for i, c in enumerate(ch):
+        if kind == "edge":                  # 全源贴近圆盘边界
+            a = rng.uniform(0, 2*np.pi); r = rng.uniform(1750, 1800)
+        elif kind == "center":              # 全源贴近原点
+            a = rng.uniform(0, 2*np.pi); r = rng.uniform(0, 150)
+        else:
+            a = rng.uniform(0, 2*np.pi); r = robotmod.R_AREA*math.sqrt(rng.uniform())
+        pos = (r*math.cos(a), r*math.sin(a))
+        rx = 1000.0 if kind == "worst_rx" else float(rng.uniform(1000, 1500))
+        out.append(dict(pos=pos, ch=c, r_rx=rx, pointing=None))
+    if kind == "degenerate" and len(out) >= 2:      # 两源相距 <25m: 近简并
+        p0 = out[0]["pos"]
+        out[1]["pos"] = (p0[0] + rng.uniform(-20, 20), p0[1] + rng.uniform(-20, 20))
+    return out
+
+
+def make_env(rng, specs):
+    """用显式源集合替换 Env 的随机源(不改 experiment.py)。"""
+    env = exp.Env(rng, n_src=len(specs), directional=False)
+    env.sources = specs
+    env.ch_by_id = {s["ch"]: s for s in specs}
+    env.cleared = set()
+    return env
+
+
+def run_patho(n_rep=200, seed=99):
+    """极端场景压力测试: 每类重复 n_rep 次, 报告漏清与时间分布 + 漏清率置信上界。"""
+    scen = [("随机·13源(对照)", "random", 13), ("上界16源", "random", 16),
+            ("下界10源", "random", 10), ("最坏接收(全1000m)", "worst_rx", 13),
+            ("全源贴近边界", "edge", 13), ("全源贴近原点", "center", 13),
+            ("近简并双源", "degenerate", 13)]
+    print(f"极端场景压力测试: 每类 {n_rep} 次")
+    print("%-22s%9s%8s%9s%9s%11s%13s" % ("场景", "全清率", "漏清例", "平均(s)", "P95(s)",
+                                         "最大(s)", "漏清率95%上界"))
+    rng = np.random.default_rng(seed)
+    bad = 0
+    for label, kind, n in scen:
+        crs = []; Ts = []; miss = 0
+        for _ in range(n_rep):
+            env = make_env(rng, patho_sources(rng, kind, n))
+            cli = MockClient(env); robot = robotmod.Problem3Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                got = robot.run()
+            crs.append(got/env.n_src); Ts.append(cli.dist/5 + cli.n_measure*5)
+            if got < env.n_src:
+                miss += 1
+        Ts = np.array(Ts)
+        ub = 1 - 0.05**(1.0/n_rep) if miss == 0 else None
+        bad += miss
+        print("%-22s%8.1f%%%8d%9.0f%9.0f%11.0f%13s" % (
+            label, np.mean(crs)*100, miss, Ts.mean(), np.percentile(Ts, 95), Ts.max(),
+            f"{ub*100:.2f}%" if ub is not None else "见漏清例"))
+    print(f"合计漏清 {bad} 例")
+    return bad
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="问题3 robot.py 离线自检")
     ap.add_argument("--cases", type=int, default=1000)
     ap.add_argument("--diag", action="store_true",
                     help="额外输出定位方式/Ω半径 与 逐次清除来源 的统计(诊断用)")
+    ap.add_argument("--patho", action="store_true",
+                    help="只跑极端场景压力测试(病理几何集)")
+    ap.add_argument("--patho-rep", type=int, default=200, help="每类极端场景重复次数")
     args = ap.parse_args()
+    if args.patho:
+        raise SystemExit(0 if run_patho(args.patho_rep) == 0 else 1)
     rng = np.random.default_rng(2026)
     n_cases = args.cases
     cleared_all = 0

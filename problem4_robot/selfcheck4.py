@@ -138,11 +138,91 @@ def verify_determinism(n_cases=20, seed=777):
     return same and same_case
 
 
+def patho_sources(rng, kind, n):
+    """构造极端/病理场景的源集合(随机采样很难碰到的几何与指向)。"""
+    ch = [int(c) for c in rng.choice(np.arange(1, r4.N_CH+1), size=n, replace=False)]
+    out = []
+    for i, c in enumerate(ch):
+        if kind == "edge_out":              # 圆盘边界且指向外侧(只有盘外点能测到)
+            a = rng.uniform(0, 2*np.pi); r = rng.uniform(1750, 1800)
+            pos = np.array([r*math.cos(a), r*math.sin(a)]); point = a
+        elif kind == "edge_tangent":        # 圆盘边界且切向
+            a = rng.uniform(0, 2*np.pi); r = rng.uniform(1700, 1800)
+            pos = np.array([r*math.cos(a), r*math.sin(a)]); point = a + math.pi/2
+        elif kind == "center_away":         # 近中心且背离原点(经典病理源)
+            a = rng.uniform(0, 2*np.pi); r = rng.uniform(0, 150)
+            pos = np.array([r*math.cos(a), r*math.sin(a)]); point = a + math.pi
+        else:                               # 随机位置
+            r = r4.R_AREA*math.sqrt(rng.uniform()); a = rng.uniform(0, 2*np.pi)
+            pos = np.array([r*math.cos(a), r*math.sin(a)])
+            if kind in ("random_dir", "worst_rx", "degenerate"):
+                point = rng.uniform(0, 2*np.pi)
+            elif kind == "random_omni":
+                point = None
+            else:
+                point = rng.uniform(0, 2*np.pi) if rng.uniform() < 0.5 else None
+        rx = 1000.0 if kind == "worst_rx" else float(rng.uniform(1000, 1500))
+        out.append(dict(pos=pos, ch=c, r_rx=rx, pointing=point))
+    if kind == "degenerate" and len(out) >= 2:      # 两源相距 <25m: 近简并
+        d = np.array([rng.uniform(-20, 20), rng.uniform(-20, 20)])
+        out[1]["pos"] = out[0]["pos"] + d
+    return out
+
+
+def make_env(rng, specs):
+    """用显式源集合替换 Env 的随机源(不改 experiment.py, 只覆盖构造结果)。"""
+    env = exp.Env(rng, n_src=len(specs), directional=True, p_dir=1.0)
+    env.sources = specs
+    env.ch_by_id = {s["ch"]: s for s in specs}
+    env.cleared = set()
+    return env
+
+
+def run_patho(n_rep=200, seed=99):
+    """极端场景压力测试: 每类场景重复 n_rep 次, 报告漏清与时间分布 + 漏清率置信上界。"""
+    scen = [("随机·全定向", "random_dir", 13), ("随机·50%定向", "random_50", 13),
+            ("随机·全向", "random_omni", 13), ("上界16源·定向50%", "random_50", 16),
+            ("下界10源·定向50%", "random_50", 10),
+            ("最坏接收(全1000m)+定向50%", "worst_rx", 13),
+            ("边界外指(全) ", "edge_out", 13), ("边界切向(全)", "edge_tangent", 13),
+            ("近中心背向(全)", "center_away", 13), ("近简并双源(全)", "degenerate", 13)]
+    print(f"极端场景压力测试: 每类 {n_rep} 次")
+    print("%-26s%9s%8s%9s%9s%11s%13s" % ("场景", "全清率", "漏清例", "平均(s)", "P95(s)",
+                                         "最大(s)", "漏清率95%上界"))
+    rng = np.random.default_rng(seed)
+    bad = 0
+    for label, kind, n in scen:
+        k = kind if kind != "random_50" else "random_dir"
+        crs = []; Ts = []; miss = 0
+        for _ in range(n_rep):
+            specs = patho_sources(rng, k, n)
+            if kind == "random_50":
+                for s in specs:
+                    if rng.uniform() >= 0.5:
+                        s["pointing"] = None
+            env = make_env(rng, specs)
+            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                got = rb.run()
+            T = cli.dist/5 + cli.n_measure*5 + cli.n_switch*1 + cli.n_clear_ok*5 + cli.fail*3
+            crs.append(got/env.n_src); Ts.append(T)
+            if got < env.n_src:
+                miss += 1
+        Ts = np.array(Ts)
+        ub = 1 - 0.05**(1.0/n_rep) if miss == 0 else None
+        bad += miss
+        print("%-26s%8.1f%%%8d%9.0f%9.0f%11.0f%13s" % (
+            label, np.mean(crs)*100, miss, Ts.mean(), np.percentile(Ts, 95), Ts.max(),
+            f"{ub*100:.2f}%" if ub is not None else "见漏清例"))
+    print(f"合计漏清 {bad} 例")
+    return bad
+
+
 class MockClient:
     def __init__(self, env):
         self.env = env; self.position = (0.0, 0.0); self.channel = 1
         self.remaining_real = 1200; self.dist = 0.0; self.n_measure = 0; self.n_clear = 0
-        self.fail = 0
+        self.fail = 0; self.n_switch = 0; self.n_clear_ok = 0
         self.phase = "init"; self.ph = {}          # 阶段 -> [移动, 检测, 清除]
     def _p(self):
         return self.ph.setdefault(getattr(self, "phase", "init"), [0.0, 0, 0])
@@ -151,12 +231,17 @@ class MockClient:
         self.dist += d; self._p()[0] += d; self.position = (x, y)
     def enter(self): pass
     def measure(self, x, y, ch):
-        self._move(x, y); self.channel = ch; self.n_measure += 1; self._p()[1] += 1
+        self._move(x, y)
+        if ch != self.channel: self.n_switch += 1
+        self.channel = ch; self.n_measure += 1; self._p()[1] += 1
         r, svd = self.env.measure(np.array([x, y]), ch); return True, r, svd
     def clear(self, x, y, ch):
-        self._move(x, y); self.n_clear += 1; self._p()[2] += 1
+        self._move(x, y)
+        if ch != self.channel: self.n_switch += 1
+        self.channel = ch; self.n_clear += 1; self._p()[2] += 1
         r = self.env.clear(np.array([x, y]), ch)
         if r != 'success': self.fail += 1
+        else: self.n_clear_ok += 1
         return True, r
     def exit(self): pass
 
@@ -227,6 +312,10 @@ def show_diag(tag, r):
 if __name__ == "__main__":
     import sys as _sys
     args = [a for a in _sys.argv[1:] if not a.startswith("--")]
+    if "--patho" in _sys.argv:
+        n_rep = int(args[0]) if args else 200
+        bad = run_patho(n_rep)
+        _sys.exit(0 if bad == 0 else 1)
     if "--cert" in _sys.argv:
         # 只做"索引映射 + 证书正确性 + 摘要 schema + 固定种子一致性"复核(回归用)
         ok1 = verify_path_index()
