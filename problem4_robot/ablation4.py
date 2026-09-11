@@ -18,7 +18,7 @@ class MockClient:
     def __init__(self, env):
         self.env = env; self.position = (0.0, 0.0); self.channel = 1
         self.remaining_real = 1200; self.dist = 0.0; self.n_measure = 0; self.fail = 0
-        self.n_switch = 0; self.n_clear_ok = 0; self.meta = {}
+        self.n_switch = 0; self.n_clear_ok = 0; self.n_clear = 0; self.meta = {}
     def _move(self, x, y):
         self.dist += math.hypot(x-self.position[0], y-self.position[1]); self.position = (x, y)
     def enter(self): pass
@@ -30,7 +30,7 @@ class MockClient:
     def clear(self, x, y, ch):
         self._move(x, y)
         if ch != self.channel: self.n_switch += 1
-        self.channel = ch
+        self.channel = ch; self.n_clear += 1
         r = self.env.clear(np.array([x, y]), ch)
         if r != 'success': self.fail += 1
         else: self.n_clear_ok += 1
@@ -55,6 +55,120 @@ def run_cfg(neg, pso, verify, n=8, ratios=(0.5, 1.0), seed=3026):
             Ts.append(cli.dist/5 + cli.n_measure*5)
         out[pd] = (np.mean(crs), np.mean(Ls), np.mean(ms), float(np.mean(fs)), np.mean(Ts))
     return out
+
+
+def run_neighbor(rings, n=30, seed=3026, ratios=(0.5, 1.0)):
+    """邻域试探消融: 同一批随机案例(同 seed)下跑一种 NEIGHBOR_RINGS 配置。
+
+    逐案例产出: 清除率/是否漏清、归航 episode 明细(homing_diag)、清除明细(clear_diag)、
+    总移动/检测/清除/换频/时间。
+    """
+    r4.Problem4Robot.NEIGHBOR_RINGS = tuple(rings)
+    out = {}
+    for pd in ratios:
+        rng = np.random.default_rng(seed)
+        rows = []
+        for _ in range(n):
+            env = exp.Env(rng, directional=True, p_dir=pd)
+            cli = MockClient(env); rb = r4.Problem4Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                k = rb.run()
+            T = (cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
+                 + cli.n_clear_ok*5 + cli.fail*3)
+            rows.append(dict(
+                cr=k/env.n_src, miss=1 if k < env.n_src else 0, n_src=env.n_src,
+                dist=cli.dist, meas=cli.n_measure, clear=cli.n_clear,
+                fail=cli.fail, ok=cli.n_clear_ok, sw=cli.n_switch, T=T,
+                homing=list(getattr(cli, "homing_diag", [])),
+                cdiag=list(getattr(cli, "clear_diag", []) or
+                           getattr(rb.c, "clear_diag", []))))
+        out[pd] = rows
+    return out
+
+
+def _ep_stats(rows, key):
+    """从逐案例的 episode 明细汇总邻域/换示向指标。"""
+    eps = [e for r in rows for e in r["homing"]]
+    cd = [d for r in rows for d in r["cdiag"]]
+    ring_att = sum(1 for d in cd if "邻域" in str(d.get("src")) and d.get("result") != "rejected")
+    ring_ok = sum(1 for d in cd if "邻域" in str(d.get("src")) and d.get("result") == "success")
+    by = {}
+    for e in eps:
+        if e.get("cleared_by"):
+            by[e["cleared_by"]] = by.get(e["cleared_by"], 0) + 1
+    multi = [e for e in eps if e.get("bearings_tried", 0) > 1]
+    later = [e for e in multi if (e.get("cleared_at_bearing") or 0) > 0]
+    hard = [e for e in eps if e.get("cleared_by")]
+    n_cases = len(rows)
+    return dict(
+        episodes=len(eps), cleared_by=by,
+        ring_att=ring_att, ring_ok=ring_ok,
+        ring_rate=(ring_ok/ring_att if ring_att else None),
+        ring_cond=(by.get("邻域", 0)/len(eps) if eps else None),
+        multi=len(multi), later=len(later),
+        later_rate=(len(later)/len(multi) if multi else None),
+        ep_moves=(np.mean([e.get("episode_moves_m", 0.0) for e in hard]) if hard else 0.0),
+        ep_clears=(np.mean([(e.get("cost") or {}).get("n_clear") or 0 for e in hard])
+                   if hard else 0.0),
+        ep_time=(np.mean([e.get("episode_time_s", 0.0) for e in hard]) if hard else 0.0),
+        ep_per_case=len(eps)/n_cases, hard_per_case=len(hard)/n_cases)
+
+
+def paired_neighbor(n=100, seed=3026):
+    """邻域试探四臂消融: 只做既有流程的开关组合, 不设计新算法。默认策略不变。"""
+    arms = [("当前: 8m+15m 两圈各6点", (8.0, 15.0)),
+            ("仅 8m 圈", (8.0,)),
+            ("仅 15m 圈", (15.0,)),
+            ("取消邻域试探(失败即换下一条示向)", ())]
+    res = {}
+    for name, rings in arms:
+        t0 = time.time()
+        res[name] = run_neighbor(rings, n, seed)
+        print(f"  已跑 {name}  [{time.time()-t0:.0f}s]", flush=True)
+    base = res[arms[0][0]]
+    print(f"\n[邻域试探消融] n={n} 案例/档, 同 seed 同场景配对")
+    for pd in (0.5, 1.0):
+        print(f"\n=== 定向比例 {pd*100:.0f}% ===")
+        hdr = "%-34s%8s%8s%9s%10s%11s%13s%9s" % (
+            "配置", "清除率", "漏清例", "移动(m)", "时间(s)", "P90(s)",
+            "Δ时间(s)", "Δ时间95%CI")
+        print(hdr); print("-" * len(hdr))
+        for name, _ in arms:
+            rows = res[name][pd]
+            cr = np.mean([r["cr"] for r in rows])
+            T = np.array([r["T"] for r in rows])
+            s = "%-34s%7.1f%%%8d%9.0f%10.0f%11.0f" % (
+                name, cr*100, sum(r["miss"] for r in rows),
+                np.mean([r["dist"] for r in rows]), T.mean(), np.percentile(T, 90))
+            if name == arms[0][0]:
+                s += "%13s%9s" % ("—", "—")
+            else:
+                d = T - np.array([r["T"] for r in base[pd]])
+                se = d.std(ddof=1)/math.sqrt(len(d))
+                s += "%13.0f%9s" % (d.mean(), f"[{d.mean()-1.96*se:.0f},{d.mean()+1.96*se:.0f}]")
+            print(s)
+        print("%-34s%8s%8s%9s%10s%11s" % ("", "episode", "邻域尝试", "邻域成功",
+                                          "邻域成功率", "条件成功率"))
+        for name, _ in arms:
+            e = _ep_stats(res[name][pd], name)
+            print("%-34s%8d%8d%10d%11s%12s" % (
+                name, e["episodes"], e["ring_att"], e["ring_ok"],
+                f"{e['ring_rate']*100:.1f}%" if e["ring_rate"] is not None else "—",
+                f"{e['ring_cond']*100:.1f}%" if e["ring_cond"] is not None else "—"))
+        print("%-34s%10s%10s%10s%10s" % ("", "换示向例", "补回例", "补回比例", "清除来源"))
+        for name, _ in arms:
+            e = _ep_stats(res[name][pd], name)
+            print("%-34s%10d%10d%10s%10s" % (
+                name, e["multi"], e["later"],
+                f"{e['later_rate']*100:.1f}%" if e["later_rate"] is not None else "—",
+                ",".join(f"{k}:{v}" for k, v in sorted(e["cleared_by"].items())) or "—"))
+        print("%-34s%11s%11s%11s%11s" % ("", "困难源/例", "额外移动", "额外清除", "额外时间"))
+        for name, _ in arms:
+            e = _ep_stats(res[name][pd], name)
+            print("%-34s%11.2f%11.0f%11.2f%11.0f" % (
+                name, e["hard_per_case"], e["ep_moves"], e["ep_clears"], e["ep_time"]))
+    r4.Problem4Robot.NEIGHBOR_RINGS = (8.0, 15.0)   # 复位默认(正式策略不变)
+    return res
 
 
 def run_onway(delta, n=30, seed=3026, ratios=(0.5, 1.0)):
@@ -123,6 +237,9 @@ def paired_onway(n=30, seed=3026, arms=(200.0, 300.0, 500.0, 800.0, None)):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--neighbor":
+        paired_neighbor(int(sys.argv[2]) if len(sys.argv) > 2 else 100)
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] == "--onway-paired":
         paired_onway(int(sys.argv[2]) if len(sys.argv) > 2 else 30)
         sys.exit(0)

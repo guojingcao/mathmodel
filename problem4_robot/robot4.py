@@ -50,6 +50,13 @@ class SimClient:
         self.phase = "init"     # 当前算法阶段(机器人回填, 用于分阶段统计)
         self.locate_history = []  # 机器人回填: 每次定位的 方式/Ω半径/交会角
         self.clear_diag = []      # 机器人回填: 每次清除的 定位来源/Ω半径/结果
+        # 计数(供归航 episode 开销归因; 与离线 MockClient 同名同义)
+        self.dist = 0.0
+        self.n_measure = 0
+        self.n_clear = 0
+        self.n_clear_ok = 0
+        self.n_switch = 0
+        self.homing_diag = []     # 机器人回填: 每次归航 episode 的开销与结果
 
     def _new_req_id(self, tag):
         self._seq += 1
@@ -144,8 +151,13 @@ class SimClient:
             "base_url": self.base_url,
             "config": {"mesh_a": MESH_A, "mesh_margin": MESH_MARGIN,
                        "on_way_delta": ON_WAY_DELTA, "r_clear": R_CLEAR,
-                       "r_guarantee": R_GUARANTEE, "use_neg_info": USE_NEG_INFO,
-                       "use_pso": USE_PSO, "do_verify": DO_VERIFY},
+                       "r_guarantee": R_GUARANTEE,
+                       # 开关是类属性(不是模块常量), 必须经类名读取
+                       "use_neg_info": getattr(Problem4Robot, "USE_NEG_INFO", None),
+                       "use_pso": getattr(Problem4Robot, "USE_PSO", None),
+                       "do_verify": getattr(Problem4Robot, "DO_VERIFY", None),
+                       "neighbor_rings": list(getattr(Problem4Robot,
+                                                      "NEIGHBOR_RINGS", ()))},
             "final_virtual_time_s": self.virtual_time,
             "total_actions": len(self.actions),
             "measure_count": sum(1 for a in self.actions if a["path"] == "/measure"),
@@ -158,6 +170,8 @@ class SimClient:
             "phase_stats": phases,                  # 分阶段移动距离/动作数/虚拟时间
             "locate_stats": self._locate_stats(),   # 定位方式与 Ω 半径统计
             "clear_diag": self.clear_diag,          # 逐次清除的定位来源+Ω 半径(诊断)
+            "homing_stats": self._homing_stats(),    # 归航 episode 汇总(邻域试探消融口径)
+            "homing_diag": self.homing_diag,         # 归航 episode 明细
             "robot": self.meta,
         }
         if self.error:
@@ -187,6 +201,45 @@ class SimClient:
             "omega_radius_m_when_ls": stat(over),
             "ls_cross_angle_deg": stat([h["cross_angle_deg"] for h in ls
                                         if h.get("cross_angle_deg") is not None]),
+        }
+
+    def _homing_stats(self):
+        """归航 episode 汇总: 邻域清除成功率/条件成功率、换示向补回比例、每困难源开销。"""
+        eps = self.homing_diag
+        if not eps:
+            return {"episodes": 0}
+        cleared = [e for e in eps if e.get("cleared_by")]
+        by = {}
+        for e in cleared:
+            by[e["cleared_by"]] = by.get(e["cleared_by"], 0) + 1
+        ring_att = sum(1 for d in self.clear_diag
+                       if "邻域" in str(d.get("src")) and d.get("result") != "rejected")
+        ring_ok = sum(1 for d in self.clear_diag
+                      if "邻域" in str(d.get("src")) and d.get("result") == "success")
+        tried_multi = [e for e in eps if e.get("bearings_tried", 0) > 1]
+        later = [e for e in tried_multi if e.get("cleared_at_bearing", 0) > 0]
+        hard = [e for e in eps if e.get("cleared_by")]
+        n = len(hard) or 1
+        moved = [e.get("episode_moves_m", 0.0) for e in hard]
+        clears = [(e.get("cost") or {}).get("n_clear") or 0 for e in hard]
+        times = [e.get("episode_time_s", 0.0) for e in hard]
+
+        def avg(v):
+            return round(sum(v)/n, 1) if v else None
+        return {
+            "episodes": len(eps),
+            "cleared_episodes": len(cleared),
+            "cleared_by": by,                       # 原位/归航点/邻域/后续示向
+            "neighbor_attempts": ring_att,
+            "neighbor_success": ring_ok,
+            "neighbor_success_rate": round(ring_ok/ring_att, 4) if ring_att else None,
+            "neighbor_conditional_rate": round(by.get("邻域", 0)/len(eps), 4),
+            "multi_bearing_episodes": len(tried_multi),
+            "recovered_by_later_bearing": len(later),
+            "later_bearing_recovery_rate": (round(len(later)/len(tried_multi), 4)
+                                            if tried_multi else None),
+            "per_hard_source": {"n": len(hard), "moves_m": avg(moved),
+                                "clears": avg(clears), "time_s": avg(times)},
         }
 
     def _base(self, rid):
@@ -226,6 +279,10 @@ class SimClient:
         r = self.post("/measure", p)
         if r.get("accepted") is not True:
             return False, "rejected", None
+        self.dist += math.hypot(x-self.position[0], y-self.position[1])
+        if channel != self.channel:
+            self.n_switch += 1
+        self.n_measure += 1
         self.position = (x, y); self.channel = channel
         return True, r.get("measure_result"), r.get("svd_deg")
 
@@ -235,7 +292,13 @@ class SimClient:
         r = self.post("/clear", p)
         if r.get("accepted") is not True:
             return False, "rejected"
-        self.position = (x, y)
+        self.dist += math.hypot(x-self.position[0], y-self.position[1])
+        if channel != self.channel:
+            self.n_switch += 1
+        self.n_clear += 1
+        if r.get("clear_result") == "success":
+            self.n_clear_ok += 1
+        self.position = (x, y); self.channel = channel
         return True, r.get("clear_result")
 
     def exit(self):
@@ -400,6 +463,8 @@ class Problem4Robot:
     USE_NEG_INFO = False     # 模块1+4: 用 no_signal 负信息收缩联合可行域 + 指向状态
     USE_PSO = False          # 模块3: 定位阶段用改进 PSO 精化位置
     DO_VERIFY = False        # 模块5: 清除后对"已排除"频道做多方向复核
+    # 归航失败后的邻域试探圈: (8,15) = 既有流程; (8,) / (15,) = 仅保留一圈; () = 取消试探
+    NEIGHBOR_RINGS = (8.0, 15.0)
 
     def __init__(self, client):
         self.c = client
@@ -677,19 +742,37 @@ class Problem4Robot:
     # ---- 就近精定位(清除失败兜底)。返回 True 仅当模拟器确实返回 success ----
     def _homing_clear(self, ch, x, y, phase="homing", src="homing",
                       omega_r=None, cross_ang=None, tried=False):
-        """tried=True 表示调用者已在 (x,y) 清除过一次并失败, 不再原地重复请求。"""
+        """tried=True 表示调用者已在 (x,y) 清除过一次并失败, 不再原地重复请求。
+
+        邻域试探圈半径由类属性 NEIGHBOR_RINGS 给定(默认 (8,15) 两圈各 6 点);
+        NEIGHBOR_RINGS = () 表示取消邻域试探, 归航点失败后直接换下一条示向。
+        每进入一次归航记一条 episode 诊断(来源/试过几条示向/由谁清除/开销)。
+        """
         self._phase(phase)
+        snap0 = self._snapshot()
+        ep = {"ch": ch, "src": src, "phase": phase, "tried_first": bool(tried),
+              "n_bearings": len(self.bearings[ch]), "bearings_tried": 0,
+              "rings": list(self.NEIGHBOR_RINGS), "cleared_by": None,
+              "cleared_at_bearing": None}
+        self._diag_list(self.c, "homing_diag").append(ep)
+
+        def done(how, idx):
+            ep["cleared_by"] = how
+            ep["cleared_at_bearing"] = idx
+            self._close_episode(ep, snap0)
+            return True
         if not tried:
             okc, rc = self.c.clear(x, y, ch)
             self._note_clear(ch, x, y, src, omega_r, cross_ang, rc if okc else "rejected")
             if okc and rc == "success":
                 self.state[ch] = "cleared"; self.cleared_count += 1
-                return True
+                return done("原位", -1)
         # 对每条已有示向依次做二分归航(边界源可能只有个别方位稳健)
-        for (P, th) in list(self.bearings[ch]):
+        for bi, (P, th) in enumerate(list(self.bearings[ch])):
             bt = self._binary_homing(ch, P, th)
             if bt is None:
                 continue
+            ep["bearings_tried"] += 1
             if tried and math.hypot(bt[0]-x, bt[1]-y) < 1e-6:
                 continue                      # 归航点与失败点重合: 跳过重复请求
             okc, rc = self.c.clear(bt[0], bt[1], ch)
@@ -697,8 +780,8 @@ class Problem4Robot:
                              rc if okc else "rejected")
             if okc and rc == "success":
                 self.state[ch] = "cleared"; self.cleared_count += 1
-                return True
-            for rad in (8.0, 15.0):
+                return done("归航点" if bi == 0 else "后续示向", bi)
+            for rad in self.NEIGHBOR_RINGS:
                 for k in range(6):
                     a = k * 60 * DEG
                     q = (bt[0] + rad*math.cos(a), bt[1] + rad*math.sin(a))
@@ -707,8 +790,29 @@ class Problem4Robot:
                                      rc2 if ok2 else "rejected")
                     if ok2 and rc2 == "success":
                         self.state[ch] = "cleared"; self.cleared_count += 1
-                        return True
+                        return done("邻域", bi)
+        self._close_episode(ep, snap0)
         return False
+
+    # ---- 归航 episode 开销(供消融统计; 真实/离线客户端均可) ----
+    _SNAP_KEYS = ("dist", "n_measure", "n_clear", "n_clear_ok", "n_switch")
+
+    def _snapshot(self):
+        return {k: getattr(self.c, k, None) for k in self._SNAP_KEYS}
+
+    def _close_episode(self, ep, snap0):
+        snap1 = self._snapshot()
+        ep["cost"] = {k: (snap1[k] - snap0[k])
+                      if isinstance(snap0.get(k), (int, float))
+                      and isinstance(snap1.get(k), (int, float)) else None
+                      for k in self._SNAP_KEYS}
+        c = ep["cost"]
+        if c.get("dist") is not None:
+            ep["episode_time_s"] = round(
+                c["dist"]/5.0 + (c.get("n_measure") or 0)*5.0
+                + (c.get("n_switch") or 0)*1.0 + (c.get("n_clear_ok") or 0)*5.0
+                + max((c.get("n_clear") or 0) - (c.get("n_clear_ok") or 0), 0)*3.0, 1)
+            ep["episode_moves_m"] = round(c["dist"], 1)
 
     # ---- 主流程 ----
     def run(self):

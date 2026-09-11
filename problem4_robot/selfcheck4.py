@@ -84,6 +84,35 @@ def verify_certificate(n_cases=60, p_dir=0.5, seed=4026):
     return miss == 0 and wrong == 0
 
 
+def verify_summary_schema():
+    """回归: 真实客户端 build_summary 必须能构造成功(离线 MockClient 不走这条路径)。
+
+    历史故障: 摘要里直接引用类属性 USE_NEG_INFO 等模块级不存在的名字 -> 实机写日志时 NameError。
+    """
+    c = r4.SimClient("http://127.0.0.1:2026", "TEST-000")
+    c.phase = "mesh_scan"
+    c._record("/measure", {"position": {"x": 100.0, "y": 0.0}, "channel": 1},
+              {"accepted": True, "virtual_time_s": 10.0, "measure_result": "no_signal"})
+    c.phase = "queue_homing"
+    c._record("/clear", {"position": {"x": 300.0, "y": 40.0}, "channel": 2},
+              {"accepted": True, "virtual_time_s": 20.0, "clear_result": "success"})
+    c.homing_diag = [{"ch": 2, "src": "queue:ls", "cleared_by": "邻域", "bearings_tried": 2,
+                      "cleared_at_bearing": 0, "cost": {"n_clear": 3, "dist": 120.0},
+                      "episode_moves_m": 120.0, "episode_time_s": 41.0}]
+    c.clear_diag = [{"ch": 2, "src": "queue:ls|邻域", "result": "success",
+                     "omega_radius_m": 25.0}]
+    c.meta = {"cleared_count": 1}
+    s = c.build_summary()
+    need = {"problem", "config", "phase_stats", "locate_stats", "clear_diag",
+            "homing_stats", "movement_distance_m", "robot"}
+    missing = need - set(s)
+    keys = {"use_neg_info", "use_pso", "do_verify", "neighbor_rings", "on_way_delta"}
+    miss_cfg = keys - set(s["config"])
+    print(f"摘要构造: {'成功' if not missing else '缺键 ' + str(missing)}; "
+          f"config: {'完整' if not miss_cfg else '缺 ' + str(miss_cfg)}")
+    return not missing and not miss_cfg
+
+
 class MockClient:
     def __init__(self, env):
         self.env = env; self.position = (0.0, 0.0); self.channel = 1
@@ -174,12 +203,14 @@ if __name__ == "__main__":
     import sys as _sys
     args = [a for a in _sys.argv[1:] if not a.startswith("--")]
     if "--cert" in _sys.argv:
-        # 只做"索引映射 + 证书正确性"复核(第一优先级回归)
+        # 只做"索引映射 + 证书正确性 + 摘要 schema"复核(回归用)
         ok1 = verify_path_index()
+        ok3 = verify_summary_schema()
         ok2 = verify_certificate(int(args[0]) if args else 60)
         print(f"结论: 索引映射 {'通过' if ok1 else '不通过'}, "
+              f"摘要 schema {'通过' if ok3 else '不通过'}, "
               f"证书 {'通过' if ok2 else '不通过'}")
-        _sys.exit(0 if (ok1 and ok2) else 1)
+        _sys.exit(0 if (ok1 and ok2 and ok3) else 1)
     n = int(args[0]) if args else 30
     margin = float(args[1]) if len(args) > 1 else None
     diag = "--diag" in _sys.argv
@@ -188,6 +219,7 @@ if __name__ == "__main__":
     print(f"(MESH_MARGIN={r4.MESH_MARGIN})")
     verify_mesh()
     verify_path_index()
+    verify_summary_schema()
     print()
     for pd in [0.0, 0.5, 1.0]:
         r = run_mc(n, pd, diag=diag)
