@@ -1069,13 +1069,23 @@ class Problem4Robot:
 
 def main(argv=None):
     import argparse, os, datetime
+    global ON_WAY_DELTA          # 必须在函数内首次引用之前声明
     ap = argparse.ArgumentParser(description="问题4 全向+定向干扰源机器人")
     ap.add_argument("--robot-id", dest="robot_id", default=os.environ.get("ROBOT_ID"))
     ap.add_argument("--base-url", dest="base_url", default=DEFAULT_BASE_URL)
     ap.add_argument("--arena-id", dest="arena_id", default=DEFAULT_ARENA_ID)
     ap.add_argument("--log-file", dest="log_file", default=None)
+    ap.add_argument("--on-way-delta", dest="on_way_delta", type=float, default=None,
+                    help=f"顺路清除阈值(默认 {ON_WAY_DELTA}; 传 0 或负数=关闭顺路清除)")
+    ap.add_argument("--tag", dest="tag", default="",
+                    help="日志文件名后缀标记(如 d300/d500, 便于 A/B 对照)")
     ap.add_argument("--mesh-stats", action="store_true", help="只打印网格统计后退出")
     args = ap.parse_args(argv)
+
+    # 顺路清除阈值: 默认不变; 仅当显式传参时覆盖(用于 δ A/B 风险复核)
+    if args.on_way_delta is not None:
+        ON_WAY_DELTA = None if args.on_way_delta <= 0 else args.on_way_delta
+    print(f"[config] on_way_delta={ON_WAY_DELTA}", flush=True)
 
     if args.mesh_stats:
         rb = Problem4Robot.__new__(Problem4Robot)
@@ -1091,7 +1101,8 @@ def main(argv=None):
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = args.log_file or os.path.join(
-        log_dir, "p4_log_%s.jsonl" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+        log_dir, "p4_log_%s%s.jsonl" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
+                                        ("_" + args.tag) if args.tag else ""))
     client = SimClient(args.base_url, args.robot_id, args.arena_id)
     robot = Problem4Robot(client)
     exit_code = 0
