@@ -148,11 +148,13 @@ class SimClient:
                 p["movement_distance_m"] += leg
                 prev = (pos["x"], pos["y"])
             if a.get("path") == "/measure":
-                p["measure_count"] += 1
+                if a.get("accepted") is True:
+                    p["measure_count"] += 1
             elif a.get("path") == "/clear":
-                p["clear_attempt_count"] += 1
-                if a["response"].get("clear_result") == "success":
-                    p["clear_success_count"] += 1
+                if a.get("accepted") is True:
+                    p["clear_attempt_count"] += 1
+                    if a["response"].get("clear_result") == "success":
+                        p["clear_success_count"] += 1
             # 虚拟时间按串行时间轴分段归属到各阶段
             vt = a.get("virtual_time_s")
             if isinstance(vt, (int, float)):
@@ -175,12 +177,15 @@ class SimClient:
                        "dop_prescreen": getattr(Problem3Robot, "DOP_PRESCREEN", None)},
             "final_virtual_time_s": self.virtual_time,
             "total_actions": len(self.actions),
-            "measure_count": sum(1 for a in self.actions if a["path"] == "/measure"),
-            "clear_attempt_count": len(clears),
-            "clear_success_count": sum(1 for a in clears
-                                       if a["response"].get("clear_result") == "success"),
-            "clear_failure_count": sum(1 for a in clears
-                                       if a["response"].get("clear_result") != "success"),
+            "rejected_count": sum(1 for a in self.actions if a.get("accepted") is not True),
+            "measure_count": sum(1 for a in self.actions
+                                 if a["path"] == "/measure" and a.get("accepted") is True),
+            "clear_attempt_count": sum(1 for a in clears if a.get("accepted") is True),
+            "clear_success_count": sum(1 for a in clears if a.get("accepted") is True
+                                       and a["response"].get("clear_result") == "success"),
+            "clear_failure_count": sum(1 for a in clears if a.get("accepted") is True
+                                       and a["response"].get("clear_result") != "success"),
+            "clear_rejected_count": sum(1 for a in clears if a.get("accepted") is not True),
             "movement_distance_m": round(moves, 1),
             "phase_stats": phases,                      # 分阶段移动距离/动作数/虚拟时间
             "locate_stats": self._locate_stats(),       # 定位方式与 Ω 半径统计
@@ -530,6 +535,9 @@ class Problem3Robot:
         self.near_pos = {ch: None for ch in range(1, N_CH+1)}  # near 时的位置
         self.visited_no_signal = {ch: set() for ch in range(1, N_CH+1)}  # 记录无信号搜索点
         self.cleared_count = 0
+        self.exit_status = "completed"
+        self.unresolved_kind = {"found_uncleared": [], "uncertified": []}   # completed / incomplete / aborted_transport / aborted_budget
+        self.recovery = dict(rounds=0, measures=0, clears=0, unresolved=[])
         self.locate_diag = {}     # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
         self._meas_seen = set()   # (坐标, 频道) 去重: 模块O 不重复测量同一频道的同一坐标
         self.supp_channels = set()  # 进入过补测队列的频道(用于回填 avoided_supplement)
@@ -718,6 +726,7 @@ class Problem3Robot:
                         else:
                             self._homing_clear(c2, Q[0], Q[1], phase="on_way_homing",
                                                src="on_way:"+qsrc, omega_r=qr, cross_ang=qa)
+                            self._phase("on_way")     # 恢复阶段标签, 避免后续动作混入 on_way_homing
                         if sel and tuple(c.position) == (Q[0], Q[1]):
                             self._opp_run(Q[0], Q[1], sel, "on_way")
                 self._phase("coverage")
@@ -827,9 +836,20 @@ class Problem3Robot:
 
         self._opp_finalize()
 
+        # 恢复闭环(正确性优先): 只影响"本来就会有未解决频道"的异常案例
+        self._phase("recovery")
+        self._recovery()
         # 退出前校验: 不应存在"既未清除、也未被排除"的频道
         unresolved = [ch for ch in range(1, N_CH+1)
                       if self.state[ch] not in ("cleared", "excluded")]
+        # 语义区分: "发现过信号但没清除"= 真漏清(非正常完成, 返回非零码);
+        #           "始终无任何证据"(state 仍为 None)= 空白证书未补完, 对"清除全部源"无影响。
+        found_uncleared = [ch for ch in range(1, N_CH+1)
+                           if self.state[ch] not in ("cleared", "excluded")
+                           and (self.bearings[ch] or self.near_pos[ch] is not None)]
+        uncertified = [ch for ch in range(1, N_CH+1) if self.state[ch] is None]
+        self.unresolved_kind = {"found_uncleared": found_uncleared, "uncertified": uncertified}
+        self.exit_status = "completed" if not found_uncleared else "incomplete"
         if unresolved:
             self.log(f"警告: 仍有未解决频道 {unresolved}(可能未找到/未清除), "
                      f"将在退出摘要中记录")
@@ -844,6 +864,9 @@ class Problem3Robot:
             "unresolved_channels": sum(1 for s in self.state.values()
                                       if s not in ("cleared", "excluded")),
             "unresolved_list": unresolved,
+            "exit_status": self.exit_status,
+            "unresolved_kind": self.unresolved_kind,
+            "recovery": self.recovery,
             "channels": {str(ch): {"state": self.state[ch],
                                    "bearings": len(self.bearings[ch]),
                                    "near": self.near_pos[ch] is not None,
@@ -939,8 +962,13 @@ class Problem3Robot:
             if not ok:
                 break
             if res == "near":
+                self.near_pos[ch] = (px, py)
                 return (px, py)
             if res == "direction":
+                # 归航途中得到的有效示向必须回灌, 否则信息被丢弃(审查 §2.1)
+                if svd is not None and all(math.hypot(px-q[0], py-q[1]) > 1.0
+                                           for q, _ in self.bearings[ch]):
+                    self.bearings[ch].append(((px, py), svd))
                 if angle_diff(svd, th0) > 90.0:
                     hi = mid
                 else:
@@ -1304,6 +1332,85 @@ class Problem3Robot:
     def _note_reuse(self, rec):
         self._diag_list(self.c, "reuse_diag").append(rec)
 
+    # ---- 恢复闭环(正确性): 存在未解决频道时走有限预算恢复, 不允许"带病正常退出" ----
+    RECOV_MAX_ROUNDS = 2
+    RECOV_MAX_MEASURES = 40
+    RECOV_MAX_CLEARS = 20
+
+    def _recovery(self):
+        c = self.c
+        pts = self.search_points()
+        n_meas = n_clear = rounds = 0
+
+        def unresolved():
+            return [ch for ch in range(1, N_CH+1)
+                    if self.state[ch] not in ("cleared", "excluded")]
+
+        while (unresolved() and rounds < self.RECOV_MAX_ROUNDS
+               and n_meas < self.RECOV_MAX_MEASURES and n_clear < self.RECOV_MAX_CLEARS):
+            rounds += 1
+            self._phase("recovery")
+            for ch in list(unresolved()):
+                if self.state[ch] in ("cleared", "excluded"):
+                    continue
+                if self.state[ch] is None:
+                    # 尚未发现: 补齐**缺失的**覆盖观测(被拒绝的请求不算有效观测)
+                    for i, (px, py) in enumerate(pts):
+                        if n_meas >= self.RECOV_MAX_MEASURES:
+                            break
+                        if i in self.visited_no_signal[ch]:
+                            continue
+                        ok, res, svd = c.measure(px, py, ch)
+                        n_meas += 1
+                        if not ok:
+                            continue
+                        if res == "direction":
+                            self.state[ch] = "found"
+                            self.bearings[ch].append(((px, py), svd))
+                            break
+                        if res == "near":
+                            self.state[ch] = "found"
+                            self.near_pos[ch] = (px, py)
+                            break
+                        self.visited_no_signal[ch].add(i)
+                    if (self.state[ch] is None
+                            and len(self.visited_no_signal[ch]) >= len(pts)):
+                        self.state[ch] = "excluded"
+                    continue
+                # 已发现未清除: 重新定位 -> (必要时补测) -> 清除 -> 失败再归航
+                pt = self._locate_quick(ch, tag="恢复")
+                if pt is None:
+                    sup = self._supplement_point(ch, c.position)
+                    if sup is not None and n_meas < self.RECOV_MAX_MEASURES:
+                        ok, res, svd = c.measure(sup[0], sup[1], ch)
+                        n_meas += 1
+                        if ok and res == "direction":
+                            self.bearings[ch].append(((sup[0], sup[1]), svd))
+                        elif ok and res == "near":
+                            self.near_pos[ch] = (sup[0], sup[1])
+                        pt = self._locate_quick(ch, tag="恢复补测")
+                if pt is None or n_clear >= self.RECOV_MAX_CLEARS:
+                    continue
+                ok, res = c.clear(pt[0], pt[1], ch)
+                n_clear += 1
+                dg = self.locate_diag.get(ch, {})
+                self._note_clear(ch, pt[0], pt[1], "recovery:" + str(dg.get("method")),
+                                 dg.get("omega_radius_m"), dg.get("cross_angle_deg"),
+                                 res if ok else "rejected")
+                if ok and res == "success":
+                    self.state[ch] = "cleared"
+                    self.cleared_count += 1
+                    self.log(f"恢复清除: 频道 {ch} @ ({pt[0]:.0f},{pt[1]:.0f}) "
+                             f"[{self.cleared_count}]")
+                else:
+                    self._homing_clear(ch, pt[0], pt[1], phase="recovery_homing",
+                                       src="recovery")
+                    self._phase("recovery")
+        self.recovery = dict(rounds=rounds, measures=n_meas, clears=n_clear,
+                             unresolved=unresolved())
+        self.log(f"恢复闭环: {rounds} 轮, 额外检测 {n_meas} 次, 额外清除 {n_clear} 次, "
+                 f"未解决 {self.recovery['unresolved']}")
+
     # ---- 开放路径最优顺序: n<=9 全排列精确, 否则最近邻 ----
     @staticmethod
     def _optimal_open_path(points, start):
@@ -1554,6 +1661,12 @@ def main(argv=None):
         print(f"\n[汇总] 清除干扰源 {cleared} 个, 虚拟时刻 {s['final_virtual_time_s']:.1f}s, "
               f"移动 {s['movement_distance_m']:.0f}m, 检测 {s['measure_count']} 次, "
               f"清除 {s['clear_attempt_count']} 次(成功 {s['clear_success_count']})")
+        st = (s.get("robot") or {}).get("exit_status", "completed")
+        print(f"[状态] {st}"
+              + ("" if st == "completed" else
+                 f"  未解决频道 {(s.get('robot') or {}).get('unresolved_list')}"))
+        if st != "completed":
+            exit_code = 4        # 非正常完成: 仍有未解决频道
     except Exception as e:
         exit_code = 3
         print(f"\n[错误] {e}", file=sys.stderr)

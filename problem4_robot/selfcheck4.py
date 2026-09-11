@@ -248,7 +248,7 @@ class MockClient:
 
 def run_mc(n_cases, p_dir, diag=False):
     rng = np.random.default_rng(3026)
-    ratios = []; dists = []; meas = []; fails = []
+    ratios = []; dists = []; meas = []; fails = []; Ts = []
     ph = {}; lh = []; cd = []
     for _ in range(n_cases):
         env = exp.Env(rng, directional=True, p_dir=p_dir)
@@ -257,13 +257,16 @@ def run_mc(n_cases, p_dir, diag=False):
             n = rb.run()
         ratios.append(n/env.n_src); dists.append(cli.dist)
         meas.append(cli.n_measure); fails.append(cli.fail)
+        Ts.append(cli.dist/5 + cli.n_measure*5 + cli.n_switch*1
+                  + cli.n_clear_ok*5 + cli.fail*3)      # 统一口径
         if diag:
             for k, v in cli.ph.items():
                 a = ph.setdefault(k, [0.0, 0, 0])
                 a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
             lh.extend(getattr(cli, "locate_history", []))
             cd.extend(getattr(cli, "clear_diag", []))
-    out = dict(cr=np.mean(ratios), L=np.mean(dists), n=np.mean(meas), f=np.mean(fails))
+    out = dict(cr=np.mean(ratios), L=np.mean(dists), n=np.mean(meas), f=np.mean(fails),
+               T=float(np.mean(Ts)))
     if diag:
         out.update(ph=ph, locate=lh, clear=cd, n_cases=n_cases)
     return out
@@ -340,6 +343,6 @@ if __name__ == "__main__":
     for pd in [0.0, 0.5, 1.0]:
         r = run_mc(n, pd, diag=diag)
         print(f"定向比例{pd*100:>3.0f}%: 清除率={r['cr']*100:6.2f}%  移动={r['L']:6.0f}m  "
-              f"检测={r['n']:5.0f}  清除失败={r['f']:.2f}  估计总时间={r['L']/5+r['n']*5:6.0f}s")
+              f"检测={r['n']:5.0f}  清除失败={r['f']:.2f}  总虚拟时间(统一口径)={r['T']:6.0f}s")
         if diag:
             show_diag(f" {pd*100:.0f}%", r)
