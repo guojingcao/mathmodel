@@ -1075,10 +1075,21 @@ def main(argv=None):
     ap.add_argument("--base-url", dest="base_url", default=DEFAULT_BASE_URL)
     ap.add_argument("--arena-id", dest="arena_id", default=DEFAULT_ARENA_ID)
     ap.add_argument("--log-file", dest="log_file", default=None)
-    ap.add_argument("--on-way-delta", dest="on_way_delta", type=float, default=None,
-                    help=f"顺路清除阈值(默认 {ON_WAY_DELTA}; 传 0 或负数=关闭顺路清除)")
-    ap.add_argument("--tag", dest="tag", default="",
-                    help="日志文件名后缀标记(如 d300/d500, 便于 A/B 对照)")
+    def _env_delta():
+        """δ 也可用环境变量 ON_WAY_DELTA 提供(给固定启动脚本用, 不改命令行)。"""
+        v = os.environ.get("ON_WAY_DELTA")
+        if not v:
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            print(f"错误: 环境变量 ON_WAY_DELTA={v!r} 不是数字", file=sys.stderr)
+            sys.exit(2)
+    ap.add_argument("--on-way-delta", dest="on_way_delta", type=float, default=_env_delta(),
+                    help=f"顺路清除阈值(默认 {ON_WAY_DELTA}; 传 0 或负数=关闭顺路清除; "
+                         f"也可用环境变量 ON_WAY_DELTA)")
+    ap.add_argument("--tag", dest="tag", default=os.environ.get("LOG_TAG", ""),
+                    help="日志文件名后缀标记(如 d300/d500, 便于 A/B 对照; 也可用 LOG_TAG)")
     ap.add_argument("--mesh-stats", action="store_true", help="只打印网格统计后退出")
     args = ap.parse_args(argv)
 
