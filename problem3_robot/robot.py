@@ -539,6 +539,7 @@ class Problem3Robot:
         self.locate_diag = {}     # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
         self._meas_seen = set()   # (坐标, 频道) 去重: 模块O 不重复测量同一频道的同一坐标
         self.supp_channels = set()  # 进入过补测队列的频道(用于回填 avoided_supplement)
+        self.joint_failed = set()   # 联合调度清除失败过的频道(不再纳入计划)
 
     # ---- 阶段标签 + 诊断记录(仅记录, 不改变任何决策) ----
     def _phase(self, name):
@@ -655,6 +656,163 @@ class Problem3Robot:
         return best
 
     # ---- 主流程: 保证层(覆盖) + 状态层(可行域) + 调度层(事件驱动任务队列) ----
+    # ---- 联合动态调度(在线开放路径): 默认关(= 冻结正式版) ----
+    # 改进动机: 正式版是"覆盖巡回 + 少量顺路清除(ΔL<=δ) + 末端批量清除"; 审计显示平均移动
+    # 约 18.3 km, 而"先知参考"(已知全部源中心并完全融合)约 10.7 km —— 差距来自调度本身。
+    # 本模块把它改成在线开放路径问题: 每产生一个"已就绪"清除任务(MEC 认证点或 near 原地),
+    # 就在 {剩余覆盖点} ∪ {已就绪清除任务} 上重解近似最短开放路径(NN + 开放 2-opt),
+    # 然后**只执行该路线的第一个节点**, 执行后立即重规划(位置与频道状态都变了)。
+    # 与顺路规则的区别: 它能同时决定"先清哪几个、按什么顺序、是否先去下一个覆盖点",
+    # 而不是只检查"是否靠近下一条边"。覆盖保证不变(7 点仍全部访问)。
+    JOINT_SCHED = False
+    # 单个任务允许的最大插入代价(米): 只把"便宜"的任务纳入联合计划, 其余留待后续或末端队列。
+    # 若设为 None 则所有就绪任务都强制纳入(实测会锯齿往返, 见冒烟记录), 不建议。
+    JOINT_INSERT_MAX = 800.0
+
+    def _ready_tasks(self, tag=""):
+        """已就绪清除任务: near(可原地清除) 或 MEC 认证点(有可清除性保证)。"""
+        out = []
+        for ch in range(1, N_CH+1):
+            if self.state[ch] != "found" or ch in self.joint_failed:
+                continue
+            if self.near_pos[ch] is not None:
+                out.append((ch, self.near_pos[ch][0], self.near_pos[ch][1],
+                            "near", None, None))
+                continue
+            Q = self._locate_quick(ch, tag=tag or "joint")
+            dg = self.locate_diag.get(ch, {})
+            if Q is not None and dg.get("method") == "mec":
+                out.append((ch, Q[0], Q[1], "mec", dg.get("omega_radius_m"),
+                            dg.get("cross_angle_deg")))
+        return out
+
+    def _joint_plan(self, cur, cov_left, tasks):
+        """在线开放路径: 从当前位置出发访问全部剩余覆盖点与全部就绪任务的近似最短路。"""
+        nodes = [("cov", p[0], p[1], None) for p in cov_left] + \
+                [("task", t[1], t[2], t) for t in tasks]
+        n = len(nodes)
+        if n == 0:
+            return []
+
+        def dd(a, b):
+            return math.hypot(a[1]-b[1], a[2]-b[2])
+
+        unv = list(range(n)); seq = []; curp = (cur[0], cur[1])
+        while unv:                                   # 最近邻构造
+            k = min(unv, key=lambda i: math.hypot(nodes[i][1]-curp[0],
+                                                  nodes[i][2]-curp[1]))
+            seq.append(nodes[k]); curp = (nodes[k][1], nodes[k][2]); unv.remove(k)
+        imp = True                                   # 开放路径 2-opt(尾端自由)
+        while imp:
+            imp = False
+            for i in range(0, n-1):
+                a = ("cur", cur[0], cur[1], None) if i == 0 else seq[i-1]
+                for j in range(i+1, n):
+                    if j < n-1:
+                        old = dd(a, seq[i]) + dd(seq[j], seq[j+1])
+                        new = dd(a, seq[j]) + dd(seq[i], seq[j+1])
+                    else:
+                        old = dd(a, seq[i]); new = dd(a, seq[j])
+                    if new < old - 1e-9:
+                        seq[i:j+1] = seq[i:j+1][::-1]; imp = True
+        return seq
+
+    def _clear_task(self, ch, x, y, src, qr, qa, phase="joint"):
+        """执行一次清除任务(与顺路清除同语义: 失败即转二分归航)。"""
+        c = self.c
+        self._phase(phase)
+        sel = self._opp_select(x, y) if self.OPP_MEASURE else []
+        ok, res = c.clear(x, y, ch)
+        self._note_clear(ch, x, y, src, qr, qa, res if ok else "rejected")
+        if ok and res == "success":
+            self.state[ch] = "cleared"; self.cleared_count += 1
+            self.log(f"联合清除: 频道 {ch} @ ({x:.0f},{y:.0f})  [{self.cleared_count}]")
+        else:
+            self._homing_clear(ch, x, y, phase=phase+"_homing", src=src,
+                               omega_r=qr, cross_ang=qa)
+            self._phase(phase)
+            if self.state[ch] != "cleared":
+                self.joint_failed.add(ch)            # 不再反复纳入计划
+        if sel and tuple(c.position) == (x, y):
+            self._opp_run(x, y, sel, phase)
+
+    def _run_joint(self, pts):
+        """联合动态调度主循环。
+
+        每轮: ①先求"只覆盖剩余点"的开放路径作为基线; ②对每个就绪任务计算最便宜插入代价,
+        仅接受代价 <= JOINT_INSERT_MAX 的任务; ③在 {剩余覆盖点} ∪ {已接受任务} 上重解近似
+        最短开放路径; ④**批量执行该路线中排在下一个覆盖点之前的全部任务**, 再访问该覆盖点;
+        ⑤之后重规划(此时位置、任务集都已变化)。这样既保留联合排序的收益, 又避免锯齿往返。
+        """
+        left = list(pts)
+        guard = 0
+        while guard < 400:
+            guard += 1
+            tasks = self._ready_tasks()
+            if not left and not tasks:
+                break
+            base = self._joint_plan(self.c.position, left, [])
+            accepted = []
+            if left and tasks:
+                for t in tasks:                       # 最便宜插入代价筛选
+                    best = None
+                    for k in range(len(base)+1):
+                        a = ("cur", self.c.position[0], self.c.position[1], None) \
+                            if k == 0 else base[k-1]
+                        b = base[k] if k < len(base) else None
+                        add = math.hypot(t[1]-a[1], t[2]-a[2])
+                        if b is not None:
+                            add += math.hypot(t[1]-b[1], t[2]-b[2]) - \
+                                   math.hypot(b[1]-a[1], b[2]-a[2])
+                        if best is None or add < best:
+                            best = add
+                    if self.JOINT_INSERT_MAX is None or best <= self.JOINT_INSERT_MAX:
+                        accepted.append(t)
+            elif tasks:                                # 覆盖点已全部走完: 直接清任务
+                accepted = list(tasks)
+            plan = self._joint_plan(self.c.position, left, accepted)
+            if not plan:
+                break
+            # 批量执行"下一个覆盖点之前"的任务
+            for kind, x, y, t in plan:
+                if kind != "task":
+                    break
+                if t[0] in self.joint_failed:
+                    continue
+                self._clear_task(t[0], x, y, t[3], t[4], t[5])
+            if not left:
+                continue
+            # 接着访问计划中的下一个覆盖点
+            nxt = next((nd for nd in plan if nd[0] == "cov"), None)
+            if nxt is None:
+                continue
+            idx = left.index((nxt[1], nxt[2]))
+            self._visit_cover(idx, (nxt[1], nxt[2]))
+            left.pop(idx)
+
+    def _visit_cover(self, idx, pt):
+        """访问一个覆盖点并做蛇形频道扫描(与正式版同一扫描体)。"""
+        x, y = pt
+        order = list(range(1, N_CH+1)) if idx % 2 == 0 else list(range(N_CH, 0, -1))
+        self._phase("coverage")
+        self.log(f"联合调度 覆盖点 {idx}: ({x:.0f},{y:.0f})")
+        for ch in order:
+            if self.state[ch] in ("excluded", "cleared"):
+                continue
+            if self.state[ch] == "found" and not self._worth_measuring(ch, x, y):
+                continue
+            ok, res, svd = self.c.measure(x, y, ch)
+            if not ok:
+                continue
+            if res == "direction":
+                if self.state[ch] is None:
+                    self.state[ch] = "found"
+                self.bearings[ch].append(((x, y), svd))
+            elif res == "near":
+                self.state[ch] = "found"; self.near_pos[ch] = (x, y)
+            elif res == "no_signal":
+                self.visited_no_signal[ch].add(idx)
+
     def run(self):
         c = self.c
         self.log("调用 /enter ...")
@@ -668,8 +826,10 @@ class Problem3Robot:
                      " -> ".join("(%.0f,%.0f)" % p for p in pts))
 
         # 保证层: 依次访问 7 个覆盖点, 蛇形扫描(发现 + 免费交会)
-        self._phase("coverage")
-        for i, (px, py) in enumerate(pts):
+        # 联合动态调度开启时由 _run_joint 接管覆盖点访问(见下方 JOINT_SCHED 说明)
+        if self.JOINT_SCHED:
+            self._run_joint(pts)
+        for i, (px, py) in enumerate(pts if not self.JOINT_SCHED else []):
             order = list(range(1, N_CH+1)) if i % 2 == 0 else list(range(N_CH, 0, -1))
             self.log(f"搜索点 {i}: ({px:.0f},{py:.0f})  频道序 {'1->20' if i%2==0 else '20->1'}")
             for ch in order:
