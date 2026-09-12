@@ -60,9 +60,9 @@ T_ENTER_EXIT = 0.0     # 无固定项: 实测残余为**高估**方向, 加常�
 FROZEN3 = {
     "ORDER_BY_PROB": False, "DOP_PRESCREEN": True, "LENS_TRAVEL_W": 0.05,
     "ON_WAY_DELTA": 300.0, "LS_CLEAR_GATE": None,
-    # 覆盖环(§5.5 候选: 半径 1150 m, 9 点 40 度等分; 几何余量必增, 实机时间优势未确认)。
-    # 回退到旧冻结配置: RING_R=1200.0, RING_N=6
-    "RING_R": 1150.0, "RING_N": 9,
+    # 覆盖环(§5.5 候选: 半径 1030 m, 8 点 45 度等分; 余量 64.5 m, 冗余优于旧候选)。
+    # 回退: RING_R=1150.0/RING_N=9 (上一候选) 或 RING_R=1200.0/RING_N=6 (旧冻结版)
+    "RING_R": 1030.0, "RING_N": 8,
     "OPP_MEASURE": False, "OPP_TARGET": "spec", "OPP_MAX_PER_POINT": 2,
     "OPP_MIN_CROSS_DEG": 45.0, "OPP_MIN_SEP_M": 200.0,
     "SUPP_REUSE": False, "SUPP_REUSE_ROUTE_GATE_M": 2000.0,
