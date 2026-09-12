@@ -632,9 +632,16 @@ class Problem3Robot:
             "phase": getattr(self.c, "phase", None), "result": result,
         })
 
+    # 覆盖点集覆盖(默认 None = 用 RING_R/RING_N 的单环 + 原点):
+    #   置为坐标列表则 search_points() 直接返回该集合(用于"同心双环"等新覆盖集设计)。
+    COVER_PTS = None
+
     # ---- 保证搜索点: 原点 + 覆盖环(RING_N 点等分, 半径 RING_R; 均回退到 HEX_R/6) ----
     @staticmethod
     def search_points():
+        ov = getattr(Problem3Robot, "COVER_PTS", None)
+        if ov:
+            return [(float(x), float(y)) for x, y in ov]
         r = Problem3Robot.RING_R if Problem3Robot.RING_R is not None else HEX_R
         n = Problem3Robot.RING_N if Problem3Robot.RING_N is not None else 6
         pts = [(0.0, 0.0)]
