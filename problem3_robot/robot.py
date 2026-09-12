@@ -1829,6 +1829,8 @@ def main(argv=None):
                         help="日志文件名后缀标记(也可用环境变量 LOG_TAG)")
     parser.add_argument("--no-lens", action="store_true",
                         help="关闭鲁棒透镜补测点(回到固定垂直偏移) —— 仅用于在环 A/B")
+    parser.add_argument("--no-prob", action="store_true",
+                        help="关闭贝叶斯概率图两项(零增益不测 + 计数证书) —— 仅用于在环 A/B")
     parser.add_argument("--lens-lam", dest="lens_lam", type=float, default=None,
                         help="鲁棒透镜判据的路程权重 λ(缺省 = 采纳值 0.05)")
     parser.add_argument("--ring-r", dest="ring_r", type=float, default=None,
@@ -1865,6 +1867,9 @@ def main(argv=None):
         Problem3Robot.RING_N = args.ring_n
     if args.no_lens:
         Problem3Robot.DOP_PRESCREEN = False
+    if args.no_prob:
+        Problem3Robot.PROB_SKIP_IG = False
+        Problem3Robot.PROB_COUNT_CERT = False
     if args.lens_lam is not None:
         Problem3Robot.LENS_TRAVEL_W = args.lens_lam
 
