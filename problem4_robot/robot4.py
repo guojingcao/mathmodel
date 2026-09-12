@@ -1432,8 +1432,14 @@ def main(argv=None):
     ap.add_argument("--mesh-stats", action="store_true", help="只打印网格统计后退出")
     ap.add_argument("--no-mesh-extra", dest="no_mesh_extra", action="store_true",
                     help="关闭网格覆盖补齐点(仅用于 A/B 对照; 默认开启, 关闭即退回原网格)")
+    ap.add_argument("--no-mesh-override", dest="no_mesh_override", action="store_true",
+                    help="关闭最小覆盖设计点集(MESH_PTS_OVERRIDE), 回到 tri_mesh+补齐点; "
+                         "配合 --mesh 可复现旧网格(如实机 A/B 的旧臂)")
     args = ap.parse_args(argv)
 
+    if args.no_mesh_override:
+        Problem4Robot.MESH_PTS_OVERRIDE = None
+        print("[config] MESH_PTS_OVERRIDE=None (回退 tri_mesh 网格)", flush=True)
     if args.no_mesh_extra:
         Problem4Robot.MESH_EXTRA_PTS = []
         print("[config] MESH_EXTRA_PTS=[] (A/B 对照: 不含覆盖补齐点)", flush=True)
