@@ -69,6 +69,7 @@ FROZEN3 = {
 FROZEN4_CLS = {"USE_NEG_INFO": False, "USE_PSO": False, "DO_VERIFY": False,
                "NEIGHBOR_RINGS": (8.0, 15.0), "SUPP_MAX_DIST": None,
                "MEC_FREEZE": True,      # MEC 就绪冻结(已采纳; 消融各臂需显式覆盖以免串味)
+               "DEFER_ONWAY_HOMING": True,   # 顺路 LS 失败后暂缓归航(已采纳)
                # 网格补齐点(覆盖空洞修复): 必须纳入冻结配置, 否则消融各臂会互相串味
                "MESH_EXTRA_PTS": [(-1174.6, -1363.8), (1773.2, -308.8),
                                   (-1167.6, -1372.5), (1768.7, -342.5)]}

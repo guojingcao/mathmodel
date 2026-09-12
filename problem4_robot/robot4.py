@@ -563,6 +563,17 @@ class Problem4Robot:
     #      50%定向 −590.3 s/CI[−611,−570]/100% 案例变快, 100%定向 −500.1 s/CI[−517,−483];
     #      移动量与清除失败次数不变; 病理集 2000 例 0 漏清且 10 类全部变快)。
     MEC_FREEZE = True
+    # ---- 顺路 LS 试清失败后**暂缓归航**(默认关, 待配对实验验证) ----
+    # 动机(12 局失效结构): 首次 LS 试清成功率 92.3%, 但 21 次失败中 18 次来自失败后的恢复链
+    # (8/15 m 邻域试探占 16 次), 3 个困难源的归航恢复共 1241.6 s; 真正昂贵的是"沿错误示向的
+    # 长距离归航 + 附加检测", 而不是那次只花 3 s 的失败清除。
+    # 开启后: 顺路失败 -> 只标记本轮顺路失败 -> 继续既定网格扫描(移动本来就要做) ->
+    # 后续"免费"获得的示向使 Ω_c 继续收缩(Ω_c←Ω_c∩W) -> 扫描后队列重新定位清除;
+    # 仍失败才走原有归航+邻域兜底。不取消归航, 只是把它推迟到信息更充分时。
+    #      DEFER_ONWAY_HOMING 默认 **开启**(经固定误差场配对实验 + 病理门禁采纳:
+    #      50%定向 −64.4 s/CI[−77,−51]、100%定向 −88.5 s/CI[−106,−71]; 清除失败/例 1.2→0.6、
+    #      2.1→0.9; 最大时间 −478/−186 s; 病理集 2000 例 0 漏清)。
+    DEFER_ONWAY_HOMING = True
     _core_cache = None
     _core_cache_key = None
 
@@ -581,6 +592,7 @@ class Problem4Robot:
         self.locate_diag = {}       # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
         self.supp_skipped = set()   # 因补测距离上限被跳过、改走二分归航的频道
         self.ready_pos = {ch: None for ch in range(1, N_CH+1)}   # MEC 冻结后的认证清除点
+        self.n_defer = 0            # 顺路失败后暂缓归航的次数(诊断)
         ov = getattr(Problem4Robot, "MESH_PTS_OVERRIDE", None)
         if ov:
             self.pts = [tuple(p) for p in ov]          # 最小覆盖设计(格点块, 无空洞)
@@ -1132,12 +1144,17 @@ class Problem4Robot:
                         else:
                             # 顺路失败: 记入冷却, 不再在后续网格点反复顺路重试
                             self.onway_failed.add(c2)
-                            self._homing_clear(c2, Q[0], Q[1], phase="on_way_homing",
-                                               src="on_way:"+qsrc, omega_r=qr,
-                                               cross_ang=qa, tried=True)
-                            self._phase("on_way")   # 恢复阶段标签
-                            if self.state[c2] == "cleared":
-                                self.onway_failed.discard(c2)
+                            if getattr(Problem4Robot, "DEFER_ONWAY_HOMING", False):
+                                # 暂缓归航: 继续扫描, 让后续免费示向先改善定位(见类属性说明)
+                                self.n_defer += 1
+                                self.log(f"顺路失败暂缓归航: 频道 {c2} (留待扫描后重新定位)")
+                            else:
+                                self._homing_clear(c2, Q[0], Q[1], phase="on_way_homing",
+                                                   src="on_way:"+qsrc, omega_r=qr,
+                                                   cross_ang=qa, tried=True)
+                                self._phase("on_way")   # 恢复阶段标签
+                                if self.state[c2] == "cleared":
+                                    self.onway_failed.discard(c2)
                 self._phase("mesh_scan")
 
         self.log(f"扫描完成: 已发现 {sum(1 for s in self.state.values() if s=='found')}, "
