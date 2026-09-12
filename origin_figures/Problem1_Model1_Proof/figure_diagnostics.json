@@ -1,0 +1,54 @@
+{
+  "fonts": {
+    "english": "Times New Roman",
+    "chinese": "SimSun",
+    "times_new_roman_available": true,
+    "simsun_available": true
+  },
+  "source_pdf": "document_修订.pdf",
+  "model": "问题一",
+  "fig01_model1_geometry_proof": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(6.15)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[WARN] Non-theme colour detected",
+    "[PASS] fig01_model1_geometry_proof.pdf",
+    "[PASS] fig01_model1_geometry_proof.svg",
+    "[PASS] fig01_model1_geometry_proof.png"
+  ],
+  "fig02_grid_convergence": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(5.65)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig02_grid_convergence.pdf",
+    "[PASS] fig02_grid_convergence.svg",
+    "[PASS] fig02_grid_convergence.png"
+  ],
+  "fig03_jung_covering": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(3.05)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[WARN] Non-theme colour detected",
+    "[PASS] fig03_jung_covering.pdf",
+    "[PASS] fig03_jung_covering.svg",
+    "[PASS] fig03_jung_covering.png"
+  ],
+  "fig04_monte_carlo_validation": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(3.65)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[WARN] Non-theme colour detected",
+    "[PASS] fig04_monte_carlo_validation.pdf",
+    "[PASS] fig04_monte_carlo_validation.svg",
+    "[PASS] fig04_monte_carlo_validation.png"
+  ]
+}
