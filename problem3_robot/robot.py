@@ -1831,6 +1831,8 @@ def main(argv=None):
                         help="关闭鲁棒透镜补测点(回到固定垂直偏移) —— 仅用于在环 A/B")
     parser.add_argument("--no-prob", action="store_true",
                         help="关闭贝叶斯概率图两项(零增益不测 + 计数证书) —— 仅用于在环 A/B")
+    parser.add_argument("--scheme-v2", action="store_true",
+                        help="启用 V2.1 执行方案(单一巡回 + 保证集即定位集 + 恢复闭环)")
     parser.add_argument("--lens-lam", dest="lens_lam", type=float, default=None,
                         help="鲁棒透镜判据的路程权重 λ(缺省 = 采纳值 0.05)")
     parser.add_argument("--ring-r", dest="ring_r", type=float, default=None,
@@ -1905,7 +1907,12 @@ def main(argv=None):
         log_dir, "p3_log_%s%s.jsonl" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
                                         ("_" + args.tag) if args.tag else ""))
     client = SimClient(args.base_url, args.robot_id, args.arena_id)
-    robot = Problem3Robot(client)
+    if getattr(args, "scheme_v2", False):
+        from scheme_v2 import SchemeV2Robot
+        robot = SchemeV2Robot(client)
+        print("[config] 启用 V2.1(单一巡回 + 保证集即定位集 + 恢复闭环)", flush=True)
+    else:
+        robot = Problem3Robot(client)
     exit_code = 0
     try:
         cleared = robot.run()

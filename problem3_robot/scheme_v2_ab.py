@@ -61,9 +61,7 @@ def main():
     n_case = int(sys.argv[1]) if len(sys.argv) > 1 else 300
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 6412
     arms = [("base(现行)", "base", None),
-            ("v2(七点 r=1500)", "v2", 1500.0),
-            ("v2(兜底 r=1200)", "v2", 1200.0),
-            ("v2(兜底 r=1030)", "v2", 1030.0)]
+            ("v2.1(单一巡回)", "v2", None)]
     print(f"配对 {n_case} 例(种子 {seed}), 同场景 + 固定误差场")
     print(f"{'臂':<18}{'T(s)':>8}{'移动':>9}{'检测':>7}{'换频':>7}{'失败':>6}{'全清':>10}"
           f"{'状态':>12}")
