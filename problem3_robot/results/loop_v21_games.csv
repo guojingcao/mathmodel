@@ -1,0 +1,5 @@
+# V2.1(单一巡回) 官方模拟器在环逐局明细 (scheme=v2.1)
+file,actions,virtual_time_s,measure,clear_ok,clear_fail,movement_m,exit_status,n_unresolved,unresolved_channels
+p3_log_20260912_175429_v21_a_01.jsonl,209,8808.2,199,8,0,37896,incomplete,3,8|12|20
+p3_log_20260912_175431_v21_a_02.jsonl,224,9788.9,211,9,2,42405,incomplete,2,3|4
+p3_log_20260912_175456_v21_a_03.jsonl,158,8627.9,140,14,2,38584,incomplete,1,9
