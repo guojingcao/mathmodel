@@ -23,6 +23,7 @@ DEFAULT_BASE_URL = "http://127.0.0.1:2026"
 DEFAULT_ARENA_ID = "default"
 
 DEG = math.pi / 180.0
+BEARING_ERR_DEG = 1.0     # 题设测向误差界(±1°), 用于"横向误差上界 d̂·sin1°"的示向排序
 EPS = 1.0 * DEG
 R_AREA = 1800.0
 R_CLEAR = 20.0
@@ -574,6 +575,10 @@ class Problem4Robot:
     #      50%定向 −64.4 s/CI[−77,−51]、100%定向 −88.5 s/CI[−106,−71]; 清除失败/例 1.2→0.6、
     #      2.1→0.9; 最大时间 −478/−186 s; 病理集 2000 例 0 漏清)。
     DEFER_ONWAY_HOMING = True
+    # ---- 归航示向顺序: "acq" = 按获取顺序(原行为); "err" = 按(横向误差上界 d̂·sin1°, 移动代价)
+    #      字典序最小优先。多示向时先拿到的未必最可靠(边界源尤其如此)。默认先保持 acq,
+    #      经固定误差场配对实验验证后再决定是否切换。----
+    BEARING_ORDER = "acq"
     _core_cache = None
     _core_cache_key = None
 
@@ -1007,7 +1012,19 @@ class Problem4Robot:
                 self.state[ch] = "cleared"; self.cleared_count += 1
                 return done("原位", -1)
         # 对每条已有示向依次做二分归航(边界源可能只有个别方位稳健)
-        for bi, (P, th) in enumerate(list(self.bearings[ch])):
+        bears = list(self.bearings[ch])
+        if getattr(Problem4Robot, "BEARING_ORDER", "acq") == "err" and len(bears) > 1:
+            # #2 示向排序: 角度误差 ±1° 在距离 d̂ 处造成横向误差上界 d̂·sin1°; 故优先选
+            # (横向误差, 移动代价) 字典序最小的示向, 而不是"先拿到的那条"。
+            # 依据(12 局在环日志): s08 按获取顺序第一条示向归航失败, 换第二条才成功,
+            # 单个源因此产生 14 次失败、归航移动 2573 m、耗时 649.6 s。
+            est = self._locate_quick(ch, tag="示向排序")
+            if est is not None:
+                cx, cy = self.c.position
+                bears.sort(key=lambda it: (
+                    math.hypot(est[0]-it[0][0], est[1]-it[0][1])*math.sin(BEARING_ERR_DEG*DEG),
+                    math.hypot(it[0][0]-cx, it[0][1]-cy)))
+        for bi, (P, th) in enumerate(bears):
             bt = self._binary_homing(ch, P, th)
             if bt is None:
                 continue
