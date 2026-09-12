@@ -47,6 +47,89 @@ def sample_disk(n_uni=60000, n_edge=60000, seed=5):
     return out
 
 
+def sample_disk_dense(n_uni=60000, n_mid=60000, n_ext=80000, seed=17):
+    """更严的采样: 均匀 + [1600,1800] + 极致边界 [1780,1800](残洞所在)。"""
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(n_uni):
+        r = R*math.sqrt(rng.uniform()); a = rng.uniform(0, 2*math.pi)
+        out.append((r*math.cos(a), r*math.sin(a)))
+    for _ in range(n_mid):
+        r = rng.uniform(1600, R); a = rng.uniform(0, 2*math.pi)
+        out.append((r*math.cos(a), r*math.sin(a)))
+    for _ in range(n_ext):
+        r = rng.uniform(1780, R); a = rng.uniform(0, 2*math.pi)
+        out.append((r*math.cos(a), r*math.sin(a)))
+    return out
+
+
+def find_more(max_add=8, verbose=True):
+    """从**当前配置网格**(含已补齐点)出发, 把残余空洞补到 0。
+
+    候选 = 残缺点本身 + 其径向/角向微调(残缺点常紧贴既有顶点, 原样加入会被去重过滤)。
+    评分 = 真实重建三角剖分后剩余未覆盖数(不是距离代理), 避免重复点/退化三角形。
+    """
+    pts = [tuple(p) for p in r4.Problem4Robot(None).pts]
+    full = sample_disk_dense()
+    tris = r4.build_triangles(pts, a=r4.MESH_A)
+    bad = uncovered(pts, tris, full)
+    if verbose:
+        print(f"起点: {len(pts)} 点 / {len(tris)} 三角形; 密集采样 {len(full)} 点中未覆盖 "
+              f"{len(bad)} ({100.0*len(bad)/len(full):.5f}%)")
+    added = []
+    while bad and len(added) < max_add:
+        cands = []
+        for q in bad[::max(1, len(bad)//40)]:
+            rr = math.hypot(*q)
+            th = math.atan2(q[1], q[0])
+            if rr < 1e-9:
+                continue
+            for dr in (0.0, 2.0, 6.0, 15.0, -6.0):
+                for dth in (0.0, 0.0008, -0.0008, 0.0025, -0.0025):
+                    r2, t2 = rr + dr, th + dth
+                    if r2 <= 0:
+                        continue
+                    c = (round(r2*math.cos(t2), 1), round(r2*math.sin(t2), 1))
+                    if min(math.hypot(c[0]-p[0], c[1]-p[1]) for p in pts) > 0.5:
+                        cands.append(c)
+        best, best_bad = None, len(bad)
+        for cand in cands:
+            pts2 = pts + [cand]
+            tris2 = r4.build_triangles(pts2, a=r4.MESH_A)
+            nbad = 0
+            for q in bad:
+                if not any(in_tri(q, pts2[t[0]], pts2[t[1]], pts2[t[2]]) for t in tris2):
+                    nbad += 1
+            if nbad < best_bad:
+                best_bad, best = nbad, cand
+        if best is None:
+            if verbose:
+                print(f"  无候选可继续降低(剩余 {len(bad)}), 停止")
+            break
+        added.append(best)
+        pts = pts + [best]
+        tris = r4.build_triangles(pts, a=r4.MESH_A)
+        bad = uncovered(pts, tris, full)
+        if verbose:
+            print(f"  补点 {len(added)}: ({best[0]:8.1f},{best[1]:8.1f}) r={math.hypot(*best):7.1f} "
+                  f"-> 剩余未覆盖 {len(bad)} ({100.0*len(bad)/len(full):.5f}%)")
+    # 校验
+    tris = r4.build_triangles(pts, a=r4.MESH_A)
+    mx = max(math.hypot(pts[t[i]][0]-pts[t[j]][0], pts[t[i]][1]-pts[t[j]][1])
+             for t in tris for i in range(3) for j in range(i+1, 3))
+    mind = min(math.hypot(pts[i][0]-pts[j][0], pts[i][1]-pts[j][1])
+               for i in range(len(pts)) for j in range(i+1, len(pts)))
+    if verbose:
+        print(f"结果: {len(pts)} 点 / {len(tris)} 三角形; 最大边 {mx:.0f} m; "
+              f"最近点距 {mind:.2f} m; 未覆盖 {len(bad)}")
+    with open(EXTRA_FILE + ".all", "w", encoding="utf-8") as f:
+        base_n = len(r4.tri_mesh(r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET))
+        for p in pts[base_n:]:
+            f.write(f"{p[0]},{p[1]}\n")
+    print(f"全部补齐点已写入 {EXTRA_FILE}.all (共 {len(pts)-base_n} 个)")
+    return pts, added
+
+
 def uncovered(pts, tris, samples):
     bad = []
     for p in samples:

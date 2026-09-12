@@ -347,7 +347,7 @@ def paired_mesh(n=400, seed=3026, cand=None):
     硬约束: 全清率必须 100%(否则该臂直接否决)。
     """
     arms = [("旧默认 900/800/θ0 (31点)", (900.0, 800.0, 0.0, 0.0, 0.0), []),
-            ("现默认 920/700/θ20 +2点 (29点)", None,
+            ("现默认 920/700/θ20+补齐点", None,
              getattr(r4.Problem4Robot, "MESH_EXTRA_PTS", None))]
     res = {}
     for name, mesh, extra in arms:

@@ -67,7 +67,8 @@ FROZEN3 = {
 FROZEN4_CLS = {"USE_NEG_INFO": False, "USE_PSO": False, "DO_VERIFY": False,
                "NEIGHBOR_RINGS": (8.0, 15.0), "SUPP_MAX_DIST": None,
                # 网格补齐点(覆盖空洞修复): 必须纳入冻结配置, 否则消融各臂会互相串味
-               "MESH_EXTRA_PTS": [(-1174.6, -1363.8), (1773.2, -308.8)]}
+               "MESH_EXTRA_PTS": [(-1174.6, -1363.8), (1773.2, -308.8),
+                                  (-1167.6, -1372.5), (1768.7, -342.5)]}
 # 冻结网格 = robot4 模块级当前默认(θ20 + 平移), 与实机默认保持一致;
 # 旧网格 900/800/θ0 只作为消融对照臂, 不再作为"冻结"值。
 FROZEN4_MOD = {"ON_WAY_DELTA": 300.0, "MESH_A": 920.0, "MESH_MARGIN": 700.0,
