@@ -299,19 +299,31 @@ def _cover_holes(pts, tris, n=20000, seed=13):
     return out
 
 
-def run_mesh(mesh, n=400, seed=3026, ratios=(0.5, 1.0), extra=None, cover=True):
+def run_mesh(mesh, n=400, seed=3026, ratios=(0.5, 1.0), extra=None, cover=True,
+             override="__keep__", core=None, tsp=None):
     """网格几何消融: mesh = (a, margin, theta, offx, offy); extra = 覆盖补齐点。
 
     mesh=None -> 用模块当前默认; extra=None -> 用类当前默认(即冻结值)。
-    本函数显式设置并恢复 MESH_EXTRA_PTS, 否则两臂会串味(都带上补齐点)。
+    override: "__keep__"=不动; None=关闭点集覆盖(走 tri_mesh+extra); list=用给定点集。
+    core/tsp: 分别覆盖 CERT_CORE / TSP_MODE 开关(供 #2/#3 消融)。
+    本函数显式设置并恢复这些类属性, 否则各臂会串味。
     """
     old_extra = getattr(r4.Problem4Robot, "MESH_EXTRA_PTS", None)
+    old_ov = getattr(r4.Problem4Robot, "MESH_PTS_OVERRIDE", None)
+    old_core = getattr(r4.Problem4Robot, "CERT_CORE", None)
+    old_tsp = getattr(r4.Problem4Robot, "TSP_MODE", None)
     old_mesh = (r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET)
     if mesh is not None:
         a, mg, th, ox, oy = mesh
         r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = a, mg, th, (ox, oy)
     if extra is not None:
         r4.Problem4Robot.MESH_EXTRA_PTS = [tuple(p) for p in extra]
+    if override != "__keep__":
+        r4.Problem4Robot.MESH_PTS_OVERRIDE = override
+    if core is not None:
+        r4.Problem4Robot.CERT_CORE = core
+    if tsp is not None:
+        r4.Problem4Robot.TSP_MODE = tsp
     out = {"cover": None}
     if cover:
         rb0 = r4.Problem4Robot(None)
@@ -337,26 +349,33 @@ def run_mesh(mesh, n=400, seed=3026, ratios=(0.5, 1.0), extra=None, cover=True):
     # 恢复, 避免臂间串味
     r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = old_mesh
     r4.Problem4Robot.MESH_EXTRA_PTS = old_extra
+    r4.Problem4Robot.MESH_PTS_OVERRIDE = old_ov
+    if core is not None:
+        r4.Problem4Robot.CERT_CORE = old_core
+    if tsp is not None:
+        r4.Problem4Robot.TSP_MODE = old_tsp
     return out
 
 
 def paired_mesh(n=400, seed=3026, cand=None):
-    """网格配对实验(最终版): 旧默认 31 点网格 vs 现默认 29 点网格(含 2 个覆盖补齐点)。
+    """网格配对实验: 旧默认 31 点(稀疏外环+4 补齐点) vs 最小覆盖设计 27 点(格点块)。
 
-    两臂都显式给定 (网格参数, 补齐点), 因此臂间完全隔离; 场景按案例编号派生 -> 逐例真配对。
-    硬约束: 全清率必须 100%(否则该臂直接否决)。
+    两臂都显式给定 (网格参数, 补齐点, 点集覆盖), 因此完全隔离; 场景按案例编号派生 -> 逐例真配对。
+    硬约束: 全清率必须 100% 且三区采样无覆盖空洞(否则该臂直接否决)。
     """
-    arms = [("旧默认 900/800/θ0 (31点)", (900.0, 800.0, 0.0, 0.0, 0.0), []),
-            ("现默认 920/700/θ20+补齐点", None,
-             getattr(r4.Problem4Robot, "MESH_EXTRA_PTS", None))]
+    arms = [("旧默认 920/θ20+4补齐点 (31点)", None,
+             [(-1174.6, -1363.8), (1773.2, -308.8),
+              (-1167.6, -1372.5), (1768.7, -342.5)], None),
+            ("最小覆盖设计 27 点格点块", None, [],
+             list(getattr(r4, "Problem4Robot").MESH_DESIGN_PTS))]
     res = {}
-    for name, mesh, extra in arms:
+    for name, mesh, extra, ov in arms:
         t0 = time.time()
-        res[name] = run_mesh(mesh, n, seed, extra=extra)
+        res[name] = run_mesh(mesh, n, seed, extra=extra, override=ov)
         print(f"  已跑 {name}  [{time.time()-t0:.0f}s]", flush=True)
     base = res[arms[0][0]]
     print(f"\n[网格配对] n={n}/臂/定向比例, 同场景(按案例编号派生), 计时=simlib.sim_time")
-    for name, _, _ in arms:
+    for name, _m, _e, _ov in arms:
         r0 = res[name]
         cov = r0["cover"]
         print(f"  {name}: {r0['n_pts']} 点 / {r0['n_tris']} 三角; 覆盖空洞 "
@@ -366,7 +385,7 @@ def paired_mesh(n=400, seed=3026, cand=None):
         print("%-34s%8s%6s%9s%10s%16s%9s%9s%9s" % (
             "网格", "全清率", "漏清", "平均(s)", "Δ时间(s)", "Δ95%CI", "P90(s)",
             "最大(s)", "检测/例"))
-        for name, _, _ in arms:
+        for name, _m, _e, _ov in arms:
             rows = res[name][pd]
             T = np.array([r["T"] for r in rows])
             p = _pair_stat(T, np.array([r["T"] for r in base[pd]]))
@@ -384,7 +403,7 @@ def paired_mesh(n=400, seed=3026, cand=None):
               f"中位 Δ={np.median(d):+.0f} s")
         print("  移动: " + "  ".join(
             f"{name.split()[0]} {np.mean([r['dist'] for r in res[name][pd]]):.0f}m"
-            for name, _, _ in arms))
+            for name, _m, _e, _ov in arms))
     return res
 
 

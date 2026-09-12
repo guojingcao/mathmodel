@@ -522,18 +522,27 @@ class Problem4Robot:
     # 补测距离上限(米): None = 无上限(既有流程); 数值 = 最近补测点超过该距离就跳过补测,
     # 直接走已有的"沿首示向二分归航"(只加调度阈值, 不改覆盖/定位模型)。
     SUPP_MAX_DIST = None
-    # 网格补齐点(正确性修复, 见 cover_audit.py / mesh_complete.py):
-    # 原 27 点网格的三角剖分在圆盘内侧留有**薄空洞**(实测约 0.09% 面积, 集中在 R 内侧
-    # 1780-1800 m 环)。落在此空洞内且朝外辐射的源: (a) 所有网格顶点都在其 ±90° 扇区之外,
-    # 故任何顶点都测不到; (b) 它不属于任何三角形, 于是"所有 cover_tris 被证伪"推不出它不存在,
-    # 却被判为 excluded; 而 excluded 是终态(recovery 不处理 excluded) => 必然漏清
-    # (实测: 全定向·边界外指类 200 例中 1 例)。
-    # 补这 4 个点后剖分**完全覆盖**圆盘(20 万点密集采样, 含 [1780,1800] 极致边界环,
-    # 未覆盖 = 0), 证书推理恢复完备, 这类源也能被正常发现并清除。
-    # 前 2 点由 mesh_complete.py --find 求得(整体未覆盖 0.0892% -> 0.0050%),
-    # 后 2 点由 mesh_complete.find_more 从当前网格出发求得(0.0220% -> 0)。置空即退回原 27 点网格。
-    MESH_EXTRA_PTS = [(-1174.6, -1363.8), (1773.2, -308.8),
-                      (-1167.6, -1372.5), (1768.7, -342.5)]
+    # ===== 网格: 最小覆盖顶点集(覆盖设计, 由 mesh_design.py 搜索得到) =====
+    # 27 点三角格点块(a=910, θ=30°, 外扩半径 2412, 平移(460,0))。
+    # 关键: **完整格点块**的三角剖分并集 = 其凸包 ⊇ 圆盘, 故不存在"最外环薄空洞"——
+    # 从构造上根除过去"稀疏外环 + 事后补点"引入的证书失效问题; 且点数更少、巡回更短:
+    #   扫描成本 ≈ 巡回/5 + 20 频道×5 s×点数 = 24 120/5 + 2 700 = 7 524 s
+    #   (旧 31 点方案 24 319/5 + 3 100 = 7 964 s) -> −440 s
+    # 置 None 即回退到 tri_mesh + MESH_EXTRA_PTS 路径。
+    MESH_DESIGN_PTS = [
+        (-1904.249, -1365.0), (-1904.249, -455.0), (-1904.249, 455.0),
+        (-1904.249, 1365.0), (-1116.166, -1820.0), (-1116.166, -910.0),
+        (-1116.166, 0.0), (-1116.166, 910.0), (-1116.166, 1820.0),
+        (-328.083, -2275.0), (-328.083, -1365.0), (-328.083, -455.0),
+        (-328.083, 455.0), (-328.083, 1365.0), (-328.083, 2275.0),
+        (460.0, -1820.0), (460.0, -910.0), (460.0, 0.0),
+        (460.0, 910.0), (460.0, 1820.0), (1248.083, -1365.0),
+        (1248.083, -455.0), (1248.083, 455.0), (1248.083, 1365.0),
+        (2036.166, -910.0), (2036.166, 0.0), (2036.166, 910.0),
+    ]
+    MESH_PTS_OVERRIDE = MESH_DESIGN_PTS
+    # 覆盖补齐点: 被 MESH_PTS_OVERRIDE 取代(保留供回退路径使用)
+    MESH_EXTRA_PTS = []
 
     def __init__(self, client):
         self.c = client
@@ -549,8 +558,12 @@ class Problem4Robot:
         self.onway_failed = set()   # 顺路清除失败过的频道: 不再顺路重试, 留给扫描后批量清除
         self.locate_diag = {}       # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
         self.supp_skipped = set()   # 因补测距离上限被跳过、改走二分归航的频道
-        self.pts = tri_mesh(a=MESH_A, margin=MESH_MARGIN) + [
-            tuple(p) for p in getattr(Problem4Robot, "MESH_EXTRA_PTS", []) or []]
+        ov = getattr(Problem4Robot, "MESH_PTS_OVERRIDE", None)
+        if ov:
+            self.pts = [tuple(p) for p in ov]          # 最小覆盖设计(格点块, 无空洞)
+        else:
+            self.pts = tri_mesh(a=MESH_A, margin=MESH_MARGIN) + [
+                tuple(p) for p in getattr(Problem4Robot, "MESH_EXTRA_PTS", []) or []]
         self.tris = build_triangles(self.pts, a=MESH_A)
         self.cover_tris = covering_triangles(self.tris, self.pts)
 
