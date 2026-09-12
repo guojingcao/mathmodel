@@ -212,6 +212,17 @@ class SchemeV2Robot(R.Problem3Robot):
             if q is not None and not self._is_seen(ch, q) \
                     and self._dl(here, q, next_cover) <= self.ONWAY_DL:
                 return ("measure", ch, q, "localize")
+        # B2) 补测点兜底(现行 _supplement_point: 沿首示向垂直偏移, 取靠近当前点的一侧)
+        #     —— 这是改法1重写时被我漏掉的一环, 也是 V2.1 在环"found 但定位=None"的直接原因
+        for ch in range(1, N_CH+1):
+            if self.state[ch] != "found" or self.ready_pos[ch] is not None:
+                continue
+            if self._supp_done.get(ch):
+                continue
+            q = self._supplement_point(ch, here)
+            if q is not None and not self._is_seen(ch, q) \
+                    and self._dl(here, q, next_cover) <= self.ONWAY_DL:
+                return ("measure", ch, q, "supplement")
         for ch in range(1, N_CH+1):
             if self.state[ch] is not None:
                 continue
@@ -264,6 +275,7 @@ class SchemeV2Robot(R.Problem3Robot):
         self._cur_ch = 1
         self._n_switch = 0.0
         self._sites = set()
+        self._supp_done = {ch: 0 for ch in range(1, N_CH+1)}
         self.log(f"单一巡回: 覆盖环 {len(self.cover_pts)} 点(即保证集与定位集同一套), "
                  f"额外观测点 {len(self.prob_pts)} 个(仅 ΔL <= {self.PROB_MAX_DETOUR:.0f} m 时顺路访问)")
         measured = set()
@@ -287,6 +299,8 @@ class SchemeV2Robot(R.Problem3Robot):
                 if r is None:
                     continue
                 e, svd = r
+                if phase == "supplement":
+                    self._supp_done[ch] = 1
                 cidx = None
                 for idx, p in enumerate(self.cover_pts):
                     if math.hypot(pos[0]-p[0], pos[1]-p[1]) <= 1.0:
@@ -324,6 +338,23 @@ class SchemeV2Robot(R.Problem3Robot):
                         and self._dl(self.c.position, self.ready_pos[ch], None)
                         <= self.ONWAY_DL):
                     self._clear(ch, self.ready_pos[ch], src="on_way")
+        # ---- 改法3 前置: **保证定位链**(沿首示向二分归航 -> 清除), 覆盖"GDOP/补测都定不出来"的频道 ----
+        #      遵守已采纳的"暂缓归航"原则: 归航放到扫描结束后的收尾, 不打断扫描。
+        left = [ch for ch in range(1, N_CH+1)
+                if self.state[ch] == "found" and self.ready_pos[ch] is None]
+        if left:
+            self._phase("recovery")
+            self.log(f"收尾保证定位链: {len(left)} 个频道需归航定位 {left}")
+            for ch in left:
+                if self.state[ch] != "found":
+                    continue
+                Q = self._binary_homing(ch)          # 沿首示向二分接近(既有保证链)
+                if Q is None:
+                    continue
+                self.ready_pos[ch] = Q
+                if not self._clear(ch, Q, src="homing"):
+                    self._homing_clear(ch, Q[0], Q[1], phase="recovery_homing",
+                                       src="scheme_v21")
         # ---- 改法3: 复用现行恢复闭环(多轮 + 邻域兜底 + 未解决判定) ----
         if any(not self._resolved(ch) for ch in range(1, N_CH+1)):
             self._phase("recovery")
