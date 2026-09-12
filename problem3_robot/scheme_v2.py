@@ -334,5 +334,25 @@ class SchemeV2Robot(R.Problem3Robot):
         if unresolved:
             self.exit_status = "incomplete"
             self.unresolved_kind["found_uncleared"] = unresolved
+            self.log(f"警告: 仍有未解决频道 {unresolved}, 将在退出摘要中记录")
+        else:
+            self.log("20 个频道均已了结(已清除或已排除)")
+        # 回填结构化元信息(与现行 schema 一致, 便于在环日志与既有分析脚本对接)
+        c.meta = {
+            "cleared_count": self.cleared_count,
+            "found_channels": sum(1 for s in self.state.values() if s == "found"),
+            "excluded_channels": sum(1 for s in self.state.values() if s == "excluded"),
+            "unresolved_channels": len(unresolved),
+            "unresolved_list": unresolved,
+            "exit_status": self.exit_status,
+            "unresolved_kind": self.unresolved_kind,
+            "scheme": "v2.1",
+            "channels": {str(ch): {"state": self.state[ch],
+                                   "bearings": len(self.bearings[ch]),
+                                   "near": self.near_pos[ch] is not None,
+                                   "locate": self.locate_diag.get(ch)}
+                         for ch in range(1, N_CH+1)},
+        }
         c.exit()
+        self.log(f"结束, 清除 {self.cleared_count} 个干扰源")
         return self.cleared_count

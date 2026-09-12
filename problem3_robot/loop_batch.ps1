@@ -9,13 +9,15 @@ param(
   [string]$TeamNo = $env:ROBOT_ID,
   [int]$StartAt = 1,
   [switch]$NoLens,
-  [switch]$NoProb
+  [switch]$NoProb,
+  [switch]$SchemeV2
 )
 $env:PYTHONIOENCODING = "utf-8"
 if (-not $TeamNo) { $TeamNo = "202604004013" }
 $extra = @()
 if ($NoLens) { $extra += "--no-lens" }
 if ($NoProb) { $extra += "--no-prob" }
+if ($SchemeV2) { $extra += "--scheme-v2" }
 $ok = 0; $fail = 0
 for ($i = $StartAt; $i -lt ($StartAt + $Count); $i++) {
   $t = "{0}_{1:d2}" -f $Tag, $i
