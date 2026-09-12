@@ -3,21 +3,28 @@
 
 两个命题(全部用 fractions.Fraction 精确算术, 不含浮点判定):
 
-  命题 A(充分性, V4 满足充要判据):
-     若 ① 三角形顶点集 ⊂ 点集; ② Σ|2·面积(三角形)| = |2·面积(凸包)|; ③ 凸包每条边到原点
-     的距离 >= 1800; ④ 与圆盘相交的每个三角形最大边 <= 1000 m; 则
-        ∀G∈D: G ∈ conv(S ∩ B(G,1000)).
-     证明(逻辑链, 机器复核的是①②③④这些前提):
-       - 由 ①③ 与凸包凸性, 每个三角形 ⊂ 凸包; 由 ② 得三角形并集面积 = 凸包面积,
-         故并集与凸包只差零测集 ⟹ 并集 ⊇ 圆盘(由 ③)。
-       - 取任意 G∈D: G 落在某个三角形 T 内(或边界), 其顶点 A,B,C ∈ S;
-         由 ④ |GA|,|GB|,|GC| <= max edge(T) <= 1000 ⟹ A,B,C ∈ S∩B(G,1000);
-         而 G ∈ T = conv{A,B,C} ⟹ G ∈ conv(S∩B(G,1000)). ∎
+  命题 A(充分性, V4 满足充要判据) —— 机器辅助精确证明:
+     前提(逐项精确复核): ① 三角形顶点 ⊂ 点集; ② 凸包由 Fraction 叉积**重新构造**(非浮点),
+     且 27 点全部位于每条有向边的同一侧、顶点严格左转; ③ 37 个三角形**两两内部不重叠**
+     (精确凸多边形裁剪求交面积 = 0); ④ Σ|2S_三角形| = |2S_凸包|(精确相等);
+     ⑤ 凸包每条边到原点距离 >= 1800; ⑥ 与圆盘相交的每个三角形最大边 <= 1000 m。
+     证明链:
+       - ①+②: 每个三角形 ⊂ 凸包(凸包凸性);
+       - ③+④: 三角形**互不重叠**且面积之和恰等于凸包面积;
+       - 三角形与凸包均为**闭集**, 故并集闭; 由 ③ 得 area(∪T_i)=Σarea(T_i)=area(conv S),
+         即 conv(S)\∪T_i 是开集且测度为 0 ⟹ 无内点 ⟹ 为空(并集闭) ⟹ **∪T_i = conv(S)**;
+         结合 ⑤ 得 ∪T_i ⊇ 圆盘。
+       - 取任意 G∈D: G 落在某三角形 T 内, 其顶点 A,B,C ∈ S 且由 ⑥ |GA|,|GB|,|GC| <= 1000
+         ⟹ A,B,C ∈ S∩B(G,1000); 而 G ∈ T = conv{A,B,C} ⟹ G ∈ conv(S∩B(G,1000)). ∎
+     注意: 若不做 ③(不重叠), 仅 ④ 的面积相等**不能**推出并集 = 凸包(重叠可与缺口相抵),
+     故 ③ 是证明链的必需环节。
 
-  命题 B(V4 的 27 个站点全部承重):
+  命题 B(V4 为**包含极小**可行站集):
      对每个 i, 给出**显式证书** (G, u): G ∈ D 且对全部 s ∈ S_i ∩ B(G,1000) 有
      <s−G, u> < 0 (u 为有理向量), 即 G ∉ conv(S_i ∩ B(G,1000)) ⟹ 删除第 i 站后充要判据失效。
      每条证书逐项用精确算术验证(距离比较用平方比较, 不引入开方)。
+     **适用范围**: 仅覆盖 V4 的 27 个"单站删除"子集, 不能推出"任何 26 点布局不可行",
+     也不构成"27 点为全局最少站数"的证明。
 
 用法: python hull_cert_proof.py
 """
@@ -70,18 +77,95 @@ def tri_intersects_disk(a, b, c, lim):
     return False
 
 
+def hull_exact(pts):
+    """用 Fraction 叉积重新构造凸包(CCW, 去掉共线点) —— 不依赖浮点 hull()。"""
+    ps = sorted(set(pts))
+
+    def half(q):
+        out = []
+        for p in q:
+            while len(out) >= 2 and cross(out[-2], out[-1], p) <= 0:
+                out.pop()
+            out.append(p)
+        return out
+    return half(ps)[:-1] + half(ps[::-1])[:-1]
+
+
+def clip_convex(subject, clip):
+    """Sutherland-Hodgman 精确裁剪(clip 为 CCW 凸多边形, 内部 = 每条有向边左侧)。"""
+    out = list(subject)
+    for i in range(len(clip)):
+        a, b = clip[i], clip[(i+1) % len(clip)]
+        if not out:
+            return []
+        new = []
+        for j in range(len(out)):
+            p, q = out[j], out[(j+1) % len(out)]
+            cp = cross(a, b, p)
+            cq = cross(a, b, q)
+            if cp >= 0:
+                new.append(p)
+            if (cp > 0 and cq < 0) or (cp < 0 and cq > 0):
+                # 交点参数 t = cp/(cp-cq), 用 Fraction 精确表示
+                t = cp/(cp-cq)
+                new.append((p[0] + t*(q[0]-p[0]), p[1] + t*(q[1]-p[1])))
+        out = new
+    return out
+
+
+def poly_area2(poly):
+    """2×面积(精确); 逆序时取绝对值。"""
+    if len(poly) < 3:
+        return F(0)
+    s = F(0)
+    for i in range(len(poly)):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i+1) % len(poly)]
+        s += x1*y2 - x2*y1
+    return abs(s)
+
+
+def ccw_tri(a, b, c):
+    return [a, b, c] if cross(a, b, c) > 0 else [a, c, b]
+
+
 def prove_A(pts, tris):
-    """精确复核命题 A 的四个前提, 返回 (是否成立, 指标)。"""
+    """精确复核命题 A 的六个前提, 返回 (是否成立, 指标)。"""
     Ph = [tuple(ex(c) for c in p) for p in pts]
-    hp = hull([(float(x), float(y)) for x, y in pts])
-    hpx = [tuple(ex(c) for c in p) for p in hp]
-    # ② 面积加性
+    # ② 凸包由 Fraction 叉积重新构造, 并精确验证"凸性 + 全部点在同侧"
+    hpx = hull_exact(Ph)
+    ok_hull = len(hpx) >= 3
+    for i in range(len(hpx)):
+        a, b, c = hpx[i], hpx[(i+1) % len(hpx)], hpx[(i+2) % len(hpx)]
+        if cross(a, b, c) <= 0:                        # 严格左转(凸且 CCW)
+            ok_hull = False
+    for i in range(len(hpx)):                          # 所有点位于每条有向边左侧或边上
+        a, b = hpx[i], hpx[(i+1) % len(hpx)]
+        for p in Ph:
+            if cross(a, b, p) < 0:
+                ok_hull = False
+    # ④ 面积加性
     s2_tri = F(0)
+    ts = []
     for t in tris:
         a, b, c = Ph[t[0]], Ph[t[1]], Ph[t[2]]
         s2_tri += abs(cross(a, b, c))
-    s2_hull = abs(sum(cross(hpx[i], hpx[(i+1) % len(hpx)], hpx[0]) for i in range(len(hpx))))
-    # ③ 支撑边到原点距离 >= 1800:  |cross| = dist * |edge|
+        ts.append(ccw_tri(a, b, c))
+    s2_hull = abs(sum(cross(hpx[i], hpx[(i+1) % len(hpx)], hpx[0])
+                      for i in range(len(hpx))))
+    ok_area = (s2_tri == s2_hull)
+    # ③ 两两内部不重叠(精确求交面积)
+    ov_pairs, ov_max = 0, F(0)
+    n = len(ts)
+    for i in range(n):
+        for j in range(i+1, n):
+            inter = clip_convex(ts[i], ts[j])
+            a2 = poly_area2(inter)
+            if a2 > 0:
+                ov_pairs += 1
+                ov_max = max(ov_max, a2)
+    ok_nonoverlap = (ov_pairs == 0)
+    # ⑤ 支撑边到原点距离 >= 1800:  |cross| = dist * |edge|
     marginal = None
     ok_support = True
     for i in range(len(hpx)):
@@ -90,9 +174,9 @@ def prove_A(pts, tris):
         L2 = dist2(a, b)
         if cr*cr < RA2*L2:
             ok_support = False
-        m = math.sqrt(float(F(cr*cr, 1)/L2)) - 1800.0
+        m = math.sqrt(float(cr*cr/L2)) - 1800.0
         marginal = m if marginal is None else min(marginal, m)
-    # ④ 与圆盘相交的三角形的最大边(精确平方比较)
+    # ⑥ 与圆盘相交的三角形的最大边(精确平方比较)
     ok_edge = True
     worst_edge = F(0)
     for t in tris:
@@ -105,9 +189,10 @@ def prove_A(pts, tris):
             ok_edge = False
     # ① 顶点来自点集
     ok_verts = all(0 <= i < len(Ph) for t in tris for i in t)
-    ok_area = (s2_tri == s2_hull)
-    return (ok_verts and ok_area and ok_support and ok_edge), dict(
-        ok_verts=ok_verts, ok_area=ok_area, s2_tri=float(s2_tri)/2, s2_hull=float(s2_hull)/2,
+    return (ok_verts and ok_hull and ok_nonoverlap and ok_area and ok_support and ok_edge), dict(
+        ok_verts=ok_verts, ok_hull=ok_hull, hull_v=len(hpx), ok_nonoverlap=ok_nonoverlap,
+        ov_pairs=ov_pairs, ov_max=float(ov_max)/2,
+        ok_area=ok_area, s2_tri=float(s2_tri)/2, s2_hull=float(s2_hull)/2,
         ok_support=ok_support, support_margin=marginal, ok_edge=ok_edge,
         max_edge_disk=math.sqrt(float(worst_edge)))
 
@@ -195,15 +280,19 @@ def main():
     tris = r4.build_triangles(pts, a=r4.MESH_A)
     print(f"V4: {len(pts)} 点, {len(tris)} 三角形; 全部判定使用 fractions.Fraction 精确算术")
     ok, info = prove_A(pts, tris)
-    print("\n=== 命题 A: V4 满足充要判据(精确复核四个前提) ===")
+    print("\n=== 命题 A: V4 满足充要判据(六个前提逐项精确复核) ===")
     print(f"  ① 三角形顶点均取自点集: {info['ok_verts']}")
-    print(f"  ② 面积加性 Σ|2S_三角形| = |2S_凸包|: {info['ok_area']}"
+    print(f"  ② 凸包由 Fraction 叉积重新构造(非浮点)且严格凸: {info['ok_hull']}"
+          f"  (凸包 {info['hull_v']} 顶点; 27 点均位于每条有向边同一侧)")
+    print(f"  ③ 37 个三角形两两内部不重叠(精确求交面积): {info['ok_nonoverlap']}"
+          f"  (重叠对数 {info['ov_pairs']}, 最大交面积 {info['ov_max']:.3e} m²)")
+    print(f"  ④ 面积加性 Σ|2S_三角形| = |2S_凸包|: {info['ok_area']}"
           f"  ({info['s2_tri']:.3f} = {info['s2_hull']:.3f} m²)")
-    print(f"  ③ 凸包每条边到原点距离 >= 1800 m: {info['ok_support']}"
+    print(f"  ⑤ 凸包每条边到原点距离 >= 1800 m: {info['ok_support']}"
           f"  (最紧支撑边余量 {info['support_margin']:.4f} m)")
-    print(f"  ④ 与圆盘相交的三角形最大边 <= 1000 m: {info['ok_edge']}"
+    print(f"  ⑥ 与圆盘相交的三角形最大边 <= 1000 m: {info['ok_edge']}"
           f"  (最大边 {info['max_edge_disk']:.4f} m)")
-    print(f"  ==> 命题 A {'成立(充要判据对全部 G∈D 成立)' if ok else '不成立'}")
+    print(f"  ==> 命题 A {'成立(闭集 + 不重叠 + 面积相等 ⟹ 三角形并集 = 凸包 ⊇ 圆盘)' if ok else '不成立'}")
 
     print("\n=== 命题 B: 逐个删除站点后的显式违例证书(精确验证) ===")
     m0, g0, k0 = margin_of(pts, n_dir=240, n_rad=200)
@@ -227,10 +316,14 @@ def main():
             bad.append(i)
         print(f"  {i:>8}{f'({G[0]:.2f},{G[1]:.2f})':>22}{det['n_sub']:>7}"
               f"{det['max_dot']:>12.4f}{m:>13.2f}{('PASS' if okw else 'FAIL'):>10}", flush=True)
-    print(f"\n  ==> 命题 B {'成立: 27/27 删除方案均给出精确违例证书(每个站点都承重)' if allok else '未全部通过: ' + str(bad)}")
-    print("\n结论: ① V4 满足充要判据(精确算术复核, 非采样); "
-          "② 删除任意一个站点都使充要判据失效(27 条显式证书, 逐条精确验证) ⟹ '在 V4 上减站' 无可行解。")
-    print("未覆盖: '是否存在其它 22-26 点的可行布局' 仍未证明(本节只证明 V4 的单站删除不可行)。")
+    print(f"\n  ==> 命题 B {'成立: 27/27 删除方案均给出精确违例证书 ⟹ V4 为包含极小(inclusion-minimal)可行站集' if allok else '未全部通过: ' + str(bad)}")
+    print("\n结论: ① 命题 A 为**机器辅助精确证明**(六前提 + 闭集/不重叠/面积相等的并集=凸包论证), "
+          "即 V4 满足充要判据;")
+    print("      ② 命题 B 证明 V4 为**包含极小**可行站集(27 条显式证书, 逐条精确验证): "
+          "从 V4 删除任何单个站点都会失效。")
+    print("      ③ **适用范围(须严格限定)**: 命题 B 只覆盖 V4 的 27 个单站删除子集, "
+          "**不能**推出'任何 26 点布局均不可行', 也不构成'27 点为全局最少站数'的证明;")
+    print("         坐标完全不同的 22-26 点可行布局是否存在, 本文未证明。")
 
 
 if __name__ == "__main__":
