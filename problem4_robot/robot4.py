@@ -30,6 +30,7 @@ R_CLEAR = 20.0
 R_NEAR = 5.0
 R_GUARANTEE = 1000.0     # 有效接收半径下限(1000m 内必可收到, 三角证书用)
 N_CH = 20
+N_SRC_MAX = 16           # 题设源数上界(计数证书: 确认 16 个源后其余频道确定性判空)
 MESH_A = 970.0           # 三角网格边长(<=1000 保证接收; 实测 920 最优)
 MESH_MARGIN = 700.0   # 仅在无 MESH_PTS_OVERRIDE 时使用      # 网格向圆外延伸量(实测 700 起才 100% 覆盖圆盘)
 # 以下两项经配对实验选定(3 seed × 2 定向比例, n=400/臂, 全部显著 -920~-1059 s = -8.8~-9.9%):
@@ -184,6 +185,8 @@ class SimClient:
             "clear_rejected_count": sum(1 for a in clears if a.get("accepted") is not True),
             "movement_distance_m": round(moves, 1),
             "phase_stats": phases,                  # 分阶段移动距离/动作数/虚拟时间
+            "prob_cert_fired": getattr(self, "prob_cert_fired", None),   # 模块P 计数证书
+            "prob_skip_ig": getattr(self, "prob_skip_ig", None),         # 模块P 跳过零增益测量数
             "locate_stats": self._locate_stats(),   # 定位方式与 Ω 半径统计
             "clear_diag": self.clear_diag,          # 逐次清除的定位来源+Ω 半径(诊断)
             "homing_stats": self._homing_stats(),    # 归航 episode 汇总(邻域试探消融口径)
@@ -576,6 +579,22 @@ class Problem4Robot:
     #      50%定向 −590.3 s/CI[−611,−570]/100% 案例变快, 100%定向 −500.1 s/CI[−517,−483];
     #      移动量与清除失败次数不变; 病理集 2000 例 0 漏清且 10 类全部变快)。
     MEC_FREEZE = True
+    # ===== 模块P(移植自问题三, 默认关): 贝叶斯概率图 =====
+    #   PROB_SKIP_IG    : 对**已发现但未就绪**的频道, 若概率图判定"从该站点根本收不到"
+    #                     (存在后验与接收概率的乘积 <= 阈值, 定向源还要乘发射半平面因子
+    #                      1/2 —— 因为源的朝向未知), 则该测量的期望信息增益 ≈ 0, 直接不测。
+    #                     安全性: 该频道已被发现, 跳过只影响其定位质量, 不影响任何
+    #                     三角形证书/覆盖判据(证书只针对"尚未发现的频道是否为空")。
+    #   PROB_COUNT_CERT : 计数证书 —— 题设源数 <= 16, 当"已确认有源的频道数"达 16 时,
+    #                     其余频道**确定性地**判空(比三角形证书更强, 可直接省掉它们的全部测量)。
+    #   **已采纳**(配对 300 例, 固定误差场, 同场景; 环境 = V4 + MEC 冻结 + 暂缓归航):
+    #     50% 定向: skip_ig -282.5 s(-3.76 %, CI [-297,-268], 99.7 % 更快, 检测 369.5->322.3)
+    #               count_cert -37.2 s(-0.50 %, 触发 12.3 %); 两者合用 -331.1 s(-4.41 %);
+    #     100% 定向: 两者合用 -326.2 s(-4.11 %, 99.0 % 更快);
+    #     移动量与清除失败次数不变, 全清 300/300。
+    PROB_SKIP_IG = True
+    PROB_SKIP_IG_EPS = 1e-3
+    PROB_COUNT_CERT = True
     # ---- 顺路 LS 试清失败后**暂缓归航**(默认关, 待配对实验验证) ----
     # 动机(12 局失效结构): 首次 LS 试清成功率 92.3%, 但 21 次失败中 18 次来自失败后的恢复链
     # (8/15 m 邻域试探占 16 次), 3 个困难源的归航恢复共 1241.6 s; 真正昂贵的是"沿错误示向的
@@ -1135,6 +1154,31 @@ class Problem4Robot:
 
         # 保证层: 依序访问网格点, 蛇形扫描
         self._phase("mesh_scan")
+        # ===== 模块P(默认关): 贝叶斯概率图(定向源 -> 似然含指向未知的边际化 1/2) =====
+        self.prob_cert_fired = 0
+        self.prob_skip_ig = 0
+        pmaps = None
+        if getattr(Problem4Robot, "PROB_SKIP_IG", False) or \
+                getattr(Problem4Robot, "PROB_COUNT_CERT", False):
+            import os as _os
+            import sys as _sys
+            _p3 = _os.path.join(_os.path.dirname(_os.path.dirname(
+                _os.path.abspath(__file__))), "problem3_robot")
+            if _p3 not in _sys.path:
+                _sys.path.insert(0, _p3)
+            from prob_map import ProbMap
+            # 支持集外扩到 2600 m 并保留 5 % 盘外先验 —— 处理"源在目标盘外"的病理场景
+            # (教训: 支持集严格等于圆盘时, 盘外源的 detect_prob 恒为 0, 会被"零增益不测"
+            #  全部跳过, 实测该病理类反而 +1 841 s)
+            pmaps = {ch: ProbMap(r_support=2600.0, out_prior=0.05)
+                     for ch in range(1, N_CH+1)}
+            self.log("模块P(概率图): 已启用, 支持集 2600 m / 盘外先验 5%%, "
+                     "定向似然含半平面边际化, 网格 %d 格/频道" % len(pmaps[1].p))
+
+        def pm_update(ch, z, s, theta):
+            if pmaps is not None:
+                pmaps[ch].update(z, s, theta or 0.0, directional=True)
+
         for i, (mi, px, py) in enumerate(seq):
             order = list(range(1, N_CH+1)) if i % 2 == 0 else list(range(N_CH, 0, -1))
             for ch in order:
@@ -1143,9 +1187,17 @@ class Problem4Robot:
                 # 几何冗余过滤: 已发现频道只在交会角有改善时测(否则跳过)
                 if self.state[ch] == "found" and not self._worth_measuring(ch, px, py):
                     continue
+                # 模块P: 期望信息增益 ≈ 0 的测量直接跳过(仅对已发现频道, 不影响任何证书)
+                if (pmaps is not None and getattr(Problem4Robot, "PROB_SKIP_IG", False)
+                        and self.state[ch] == "found"
+                        and pmaps[ch].detect_prob((px, py), directional=True)
+                        <= getattr(Problem4Robot, "PROB_SKIP_IG_EPS", 1e-3)):
+                    self.prob_skip_ig += 1
+                    continue
                 ok, res, svd = c.measure(px, py, ch)
                 if not ok:
                     continue
+                pm_update(ch, res, (px, py), svd)
                 if res == "direction":
                     if self.state[ch] is None:
                         self.state[ch] = "found"
@@ -1156,6 +1208,20 @@ class Problem4Robot:
                 elif res == "no_signal":
                     self.ns_at[ch].add(mi)          # 真实网格编号(不是访问序号)
                     self.ns_at_pos[ch].append((px, py))
+            # 计数证书(模块P): 题设源数 <= 16, 已确认有源数达 16 -> 其余频道确定性判空
+            if getattr(Problem4Robot, "PROB_COUNT_CERT", False):
+                confirmed = sum(1 for ch in range(1, N_CH+1)
+                                if self.state[ch] in ("found", "ready", "cleared"))
+                if confirmed >= N_SRC_MAX:
+                    n_ex = 0
+                    for ch in range(1, N_CH+1):
+                        if self.state[ch] is None:
+                            self.state[ch] = "excluded"
+                            n_ex += 1
+                    if n_ex:
+                        self.prob_cert_fired = 1
+                        self.log(f"计数证书: 已确认 {confirmed} 个源(题设上界 {N_SRC_MAX}), "
+                                 f"其余 {n_ex} 个频道确定性判空, 不再测量")
             # 三角形证书: 顶点均 no_signal 的三角形被证伪
             for ch in range(1, N_CH+1):
                 if self.state[ch] in ("excluded", "cleared"):

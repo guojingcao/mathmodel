@@ -30,21 +30,38 @@ EPS = 1e-12
 class ProbMap:
     """单频道存在概率图(numpy 向量化)。"""
 
-    def __init__(self, p_channel=0.65, cell=CELL, r_area=R_AREA):
+    def __init__(self, p_channel=0.65, cell=CELL, r_area=R_AREA,
+                 r_support=None, out_prior=0.0):
+        """r_support: 后验支持集半径(默认 = 目标区半径); out_prior: 落在
+        (r_area, r_support] 环带内的先验质量份额。
+
+        **为什么需要 out_prior(问题四的教训)**: 题设把源放在 1800 m 目标区内, 但病理集
+        ("边界外指") 会把源放到盘外。若支持集严格等于圆盘, 盘外源的后验质量恒为 0,
+        `detect_prob` 也随之恒为 0 —— 于是"零信息增益不测"会把该频道的测量几乎全部跳过,
+        反而变慢(实测该病理类 +1 841 s)。故支持集可外扩, 并用 out_prior 保留少量盘外先验。
+        """
         self.cell = cell
         self.p_channel = float(p_channel)
-        n = int(2*r_area/cell)
-        xs, ys = [], []
+        self.r_area = r_area
+        self.r_support = r_area if r_support is None else float(r_support)
+        self.out_prior = float(out_prior)
+        n = int(2*self.r_support/cell) + 1
+        xs, ys, ins = [], [], []
         for i in range(n):
             for j in range(n):
-                x = -r_area + (i + 0.5)*cell
-                y = -r_area + (j + 0.5)*cell
-                if x*x + y*y <= r_area*r_area:
-                    xs.append(x); ys.append(y)
-        self.X = np.array(xs)
-        self.Y = np.array(ys)
-        m = len(xs)
-        self.p = np.full(m, 1.0/m)
+                x = -self.r_support + (i + 0.5)*cell
+                y = -self.r_support + (j + 0.5)*cell
+                rr = math.hypot(x, y)
+                if rr <= self.r_support:
+                    xs.append(x); ys.append(y); ins.append(rr <= r_area)
+        X = np.array(xs); Y = np.array(ys); ins = np.array(ins)
+        self.X, self.Y = X, Y
+        w = np.where(ins, (1.0-self.out_prior)/max(1, int(ins.sum())),
+                     (self.out_prior/max(1, int((~ins).sum()))) if self.out_prior > 0
+                     else 0.0)
+        if w.sum() <= 0:
+            w = np.full(len(xs), 1.0/len(xs))
+        self.p = w/w.sum()
         self.n_obs = 0
 
     # ---------- 似然(向量化) ----------
@@ -62,19 +79,32 @@ class ProbMap:
     def likelihood(self, z, s, theta, pointing=None, directional=False):
         d = np.hypot(self.X - s[0], self.Y - s[1])
         if z == "near":
-            return np.where(d <= R_NEAR, 1.0, EPS)
+            prx = self._prx_ge(d)
+            if directional:
+                prx = self._half_plane(prx, s, pointing)
+            return np.where((d <= R_NEAR) & (prx > 0), 1.0, EPS)
         prx = self._prx_ge(d)
-        gate = np.ones_like(d)
-        if directional and pointing is not None:
-            # 源只在 [pointing-90, pointing+90] 半平面内发射: 检测点须在该半平面内
-            ang = np.degrees(np.arctan2(s[1]-self.Y, s[0]-self.X))
-            gate = np.where(np.abs((ang - pointing + 180.0) % 360.0 - 180.0) <= 90.0,
-                            1.0, EPS)
+        if directional:
+            prx = self._half_plane(prx, s, pointing)
         if z == "direction":
             return np.maximum(EPS, prx*np.where(self._wedge(s, theta), 1.0, EPS))
         if z == "no_signal":
-            return np.maximum(EPS, (1.0 - prx)*gate)
+            return np.maximum(EPS, 1.0 - prx)
         raise ValueError(z)
+
+    def _half_plane(self, prx, s, pointing):
+        """定向源的发射半平面因子。
+
+        pointing=None 表示**指向未知**(机器人不知道源的朝向): 对均匀指向取边际,
+        检测点落在该半平面内的概率 = 1/2 -> 接收概率乘 1/2。这正是问题四中
+        `no_signal` 三义("无源/超距/盲区")的概率表达: P(no_signal) >= 1/2 恒成立。
+        """
+        if pointing is None:
+            return 0.5*prx
+        ang = np.degrees(np.arctan2(s[1]-self.Y, s[0]-self.X))
+        gate = np.where(np.abs((ang - pointing + 180.0) % 360.0 - 180.0) <= 90.0,
+                        1.0, 0.0)
+        return prx*gate
 
     # ---------- 贝叶斯更新 ----------
     def update(self, z, s, theta, pointing=None, directional=False):
@@ -114,13 +144,11 @@ class ProbMap:
         return h0 - exp_h
 
     def detect_prob(self, s, pointing=None, directional=False):
-        """P(该点能收到源) = Σ_j p(j)·P(R_c >= dist) —— 快速判据(信息增益的主导项)。"""
+        """P(该点能收到源) = Σ_j p(j)·P(接收 | j, s) —— 快速判据(信息增益的主导项)。"""
         d = np.hypot(self.X - s[0], self.Y - s[1])
         prx = self._prx_ge(d)
-        if directional and pointing is not None:
-            ang = np.degrees(np.arctan2(s[1]-self.Y, s[0]-self.X))
-            prx = prx*np.where(np.abs((ang - pointing + 180.0) % 360.0 - 180.0) <= 90.0,
-                               1.0, 0.0)
+        if directional:
+            prx = self._half_plane(prx, s, pointing)
         return float(np.dot(prx, self.p))
 
     def mecm(self):
