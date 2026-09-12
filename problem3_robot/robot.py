@@ -191,6 +191,9 @@ class SimClient:
             "clear_rejected_count": sum(1 for a in clears if a.get("accepted") is not True),
             "movement_distance_m": round(moves, 1),
             "phase_stats": phases,                      # 分阶段移动距离/动作数/虚拟时间
+            "supp_task_count": getattr(self, "aux_need", None),   # 基础扫描后需补测频道数(可观测)
+            "aux_fired": getattr(self, "aux_fired", None),        # 辅助观测是否触发
+            "aux_resolved": getattr(self, "aux_resolved", None),  # 辅助观测消除的补测任务数
             "locate_stats": self._locate_stats(),       # 定位方式与 Ω 半径统计
             "clear_diag": self.clear_diag,              # 逐次清除的定位来源+Ω 半径(诊断)
             "opp_stats": self._opp_stats(),             # 模块O 机会观测汇总
@@ -502,13 +505,19 @@ class Problem3Robot:
     # 受限顺路清除阈值(米): None=关闭; 数值=仅在插入增量 ΔL<=该值时才顺路清除。
     # 实测最优 δ≈300m(1000案例扫描 200/300/500/800/1200: 300 最优, 更大反而回归)。
     ON_WAY_DELTA = 300.0
-    # 覆盖环规格(已采纳 P3-C: 原点 + 半径 1150 m 的 9 点 40 度等分环)
-    #   最坏接收距离 968.90 -> 819.86 m(相对 1000 m 的余量 31.10 -> 180.14 m);
-    #   独立种子 1000 例固定误差场配对 -226.1 s(-4.93 %), CI [-252,-200];
-    #   病理集 7 类 x200 = 1400 例零漏清; 详见 results/verify_ring_supp.txt。
-    #   回退到冻结六边形: RING_R=1200.0, RING_N=6(逐位等价于采纳前版本)。
+    # 覆盖环规格(§5.5 候选: 原点 + 半径 1150 m 的 9 点 40 度等分环)
+    #   最坏接收距离 968.90 -> 819.86 m(相对 1000 m 的余量 31.10 -> 180.14 m) —— 几何事实;
+    #   离线同场景配对 -4.33..-4.93 %(CI 不含 0); **实机总时间优势未确认**
+    #   (在环两臂各 20 局源数校正后 CI [-127,507] 含 0, 按源归一略偏旧方案)。
+    #   回退到旧冻结六边形: RING_R=1200.0, RING_N=6(逐位等价于改动前版本)。
     RING_R = 1150.0
     RING_N = 9
+    # ===== 模块A2(实验, 默认关): 条件触发的辅助观测点 =====
+    #   AUX_PTS 为坐标列表(在基础覆盖环之外); AUX_TRIGGER_K 为触发阈值:
+    #   基础扫描后"需补测频道数 >= K"才访问辅助点(None = 总是访问)。
+    #   保证由基础环独立承担, 辅助点不参与覆盖/排除判据。
+    AUX_PTS = None
+    AUX_TRIGGER_K = None
     # ===== 外部改进模块开关(默认关, 用于消融实验) =====
     ORDER_BY_PROB = False    # 模块A: 贝叶斯概率图给覆盖点排访问顺序(替代固定六边形顺序)
     DOP_PRESCREEN = False    # 模块B: DOP(交会角)预筛候选补测点, 再按极小极大+路程择优
@@ -775,6 +784,56 @@ class Problem3Robot:
         # 调度层: 批量补测 —— 全部补测点做开放路径最优排序后统一执行
         # (注: 实测"补测终点与清除路线联合选择"无收益, 因清除点集在补测后仍会增长,
         #  联合评价只能基于不完整信息; 而清除 2-opt 路径对起点不敏感)
+        # ===== 模块A2(默认关): 条件触发的辅助观测点 =====
+        # 设计约束(重要): **保证完全由基础覆盖环承担**, 基础环的连续证书不变;
+        # 辅助点只用于改善定位几何, 不参与任何覆盖/排除证明(其 no_signal 不计入排除判据)。
+        # 触发量 = "已发现但快速定位失败、需要补测的频道数"(纯运行时可观测量, 不读真值)。
+        self.aux_need = len(supp_tasks)
+        self.aux_fired = False
+        self.aux_resolved = 0
+        aux = getattr(Problem3Robot, "AUX_PTS", None)
+        if aux:
+            k = getattr(Problem3Robot, "AUX_TRIGGER_K", None)
+            fire = (k is None) or (len(supp_tasks) >= k)
+            self.aux_fired = bool(fire and supp_tasks)
+            if self.aux_fired:
+                self.log(f"辅助观测触发: 需补测 {len(supp_tasks)} 个频道"
+                         f"(阈值 {k}), 访问 {len(aux)} 个辅助点")
+                self._phase("aux_coverage")
+                for i, (px, py) in enumerate(aux):
+                    order = (list(range(1, N_CH+1)) if i % 2 == 0
+                             else list(range(N_CH, 0, -1)))
+                    for ch in order:
+                        if self.state[ch] in ("excluded", "cleared"):
+                            continue
+                        if self.state[ch] == "found" and not self._worth_measuring(ch, px, py):
+                            continue
+                        ok, res, svd = c.measure(px, py, ch)
+                        if not ok:
+                            continue
+                        if res == "direction":
+                            if self.state[ch] is None:
+                                self.state[ch] = "found"
+                            self.bearings[ch].append(((px, py), svd))
+                        elif res == "near":
+                            self.state[ch] = "found"
+                            self.near_pos[ch] = (px, py)
+                        # 注意: 不记录 no_signal -> 不影响基础环的排除判据
+                still = []
+                for (ch, x, y) in supp_tasks:
+                    pt = self._locate_quick(ch, tag="辅助后")
+                    dg = self.locate_diag.get(ch, {})
+                    if pt is not None:
+                        clear_tasks.append((ch, pt[0], pt[1], dg.get("method") or "none",
+                                            dg.get("omega_radius_m"),
+                                            dg.get("cross_angle_deg")))
+                    else:
+                        still.append((ch, x, y))
+                self.aux_resolved = len(supp_tasks) - len(still)
+                supp_tasks = still
+                self.log(f"辅助观测结果: 消除补测任务 {self.aux_resolved} 个, "
+                         f"剩余 {len(supp_tasks)} 个")
+
         if supp_tasks:
             self.log(f"补测任务 {len(supp_tasks)} 个, 开放路径优化")
             self._phase("supplement")
