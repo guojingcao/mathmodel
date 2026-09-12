@@ -1608,6 +1608,10 @@ def main(argv=None):
                         help="本地行为日志输出路径(默认 robot_log_<时间戳>.jsonl)")
     parser.add_argument("--tag", dest="tag", default=os.environ.get("LOG_TAG", ""),
                         help="日志文件名后缀标记(也可用环境变量 LOG_TAG)")
+    parser.add_argument("--ring-r", dest="ring_r", type=float, default=None,
+                        help="覆盖环半径(米); 缺省 = 采纳配置 1150.0; 回退对照用 1200.0")
+    parser.add_argument("--ring-n", dest="ring_n", type=int, default=None,
+                        help="覆盖环点数; 缺省 = 采纳配置 9; 回退对照用 6")
     # ===== 实验开关(默认全关; 冻结默认值不受影响) =====
     parser.add_argument("--opp", action="store_true",
                         help="启用模块O 机会性顺带观测(建议配合 --opp-target uncert)")
@@ -1630,6 +1634,12 @@ def main(argv=None):
                         help="模块R 删除条件: cert=仅认证后删(保守), "
                              "cert_or_ls=认证或快速定位即删(离线略优)")
     args = parser.parse_args(argv)
+
+    # 覆盖环规格: 显式传参时覆盖类属性(用于在环两臂对照)
+    if args.ring_r is not None:
+        Problem3Robot.RING_R = args.ring_r
+    if args.ring_n is not None:
+        Problem3Robot.RING_N = args.ring_n
 
     # 实验开关: 仅在显式传参时生效, 默认保持冻结配置
     if args.opp:
