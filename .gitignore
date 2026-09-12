@@ -16,3 +16,6 @@ workspace/_tmp_origin_plugin/
 # ===== 运行产物(日志按需保留, 默认不入库) =====
 **/logs/*.jsonl
 **/logs/*.json
+nul.png
+t.png
+probe_*.png
