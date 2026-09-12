@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """共享离线实验库 (problem3_robot / problem4_robot 共用)
 
 解决的问题(来自审查):
@@ -60,6 +60,8 @@ T_ENTER_EXIT = 0.0     # 无固定项: 实测残余为**高估**方向, 加常�
 FROZEN3 = {
     "ORDER_BY_PROB": False, "DOP_PRESCREEN": False,
     "ON_WAY_DELTA": 300.0, "LS_CLEAR_GATE": None,
+    # 覆盖环(已采纳 P3-C: 半径 1150 m, 9 点 40 度等分)。回退: RING_R=1200.0, RING_N=6
+    "RING_R": 1150.0, "RING_N": 9,
     "OPP_MEASURE": False, "OPP_TARGET": "spec", "OPP_MAX_PER_POINT": 2,
     "OPP_MIN_CROSS_DEG": 45.0, "OPP_MIN_SEP_M": 200.0,
     "SUPP_REUSE": False, "SUPP_REUSE_ROUTE_GATE_M": 2000.0,

@@ -4,7 +4,8 @@
 (基于《汇总版》模型设计)
 
 模型要点:
-  1. 保证覆盖: 原点 + 半径 a=1200m 圆周上 6 个正六边形顶点, 共 7 个搜索点,
+  1. 保证覆盖: 原点 + 覆盖环圆周上的等分点(已采纳 P3-C: 半径 1150 m、9 点 40 度等分,
+     共 10 个搜索点; 回退配置为半径 1200 m、6 点 60 度等分, 共 7 个搜索点),
      覆盖半径1800m圆域(任意点到最近搜索点 <= 968.58m < 1000m, 保证全向源被发现)。
   2. 蛇形扫描: 相邻搜索点用相反频道顺序(1->20 / 20->1), 避免跨点频道切换。
   3. 位置可行域: 每次示向度 -> 一个 ±1° 楔形(两个半平面); 联合可行域 = 半平面交(凸多边形)。
@@ -37,7 +38,7 @@ R_AREA = 1800.0          # 目标区域半径
 R_CLEAR = 20.0           # 清除半径
 R_NEAR = 5.0             # 近距阈值
 R_GUARANTEE = 1000.0     # 全向源最小有效接收半径(保证覆盖用)
-HEX_R = 1200.0           # 外围六边形半径(覆盖安全余量约 31.42m)
+HEX_R = 1200.0           # 回退(六边形)覆盖环半径; 采纳版的环半径见类属性 RING_R=1150.0
 N_CH = 20                # 频道数
 
 
@@ -170,7 +171,9 @@ class SimClient:
             "problem": 3,
             "team_no": self.robot_id,
             "base_url": self.base_url,
-            "config": {"hex_r": HEX_R, "n_cover_points": 7,
+            "config": {"hex_r": HEX_R,
+                       "n_cover_points": len(Problem3Robot.search_points()),
+                       "ring_r": Problem3Robot.RING_R, "ring_n": Problem3Robot.RING_N,
                        "on_way_delta": getattr(Problem3Robot, "ON_WAY_DELTA", None),
                        "r_clear": R_CLEAR, "r_guarantee": R_GUARANTEE,
                        "order_by_prob": getattr(Problem3Robot, "ORDER_BY_PROB", None),
@@ -499,6 +502,13 @@ class Problem3Robot:
     # 受限顺路清除阈值(米): None=关闭; 数值=仅在插入增量 ΔL<=该值时才顺路清除。
     # 实测最优 δ≈300m(1000案例扫描 200/300/500/800/1200: 300 最优, 更大反而回归)。
     ON_WAY_DELTA = 300.0
+    # 覆盖环规格(已采纳 P3-C: 原点 + 半径 1150 m 的 9 点 40 度等分环)
+    #   最坏接收距离 968.90 -> 819.86 m(相对 1000 m 的余量 31.10 -> 180.14 m);
+    #   独立种子 1000 例固定误差场配对 -226.1 s(-4.93 %), CI [-252,-200];
+    #   病理集 7 类 x200 = 1400 例零漏清; 详见 results/verify_ring_supp.txt。
+    #   回退到冻结六边形: RING_R=1200.0, RING_N=6(逐位等价于采纳前版本)。
+    RING_R = 1150.0
+    RING_N = 9
     # ===== 外部改进模块开关(默认关, 用于消融实验) =====
     ORDER_BY_PROB = False    # 模块A: 贝叶斯概率图给覆盖点排访问顺序(替代固定六边形顺序)
     DOP_PRESCREEN = False    # 模块B: DOP(交会角)预筛候选补测点, 再按极小极大+路程择优
@@ -570,13 +580,15 @@ class Problem3Robot:
             "phase": getattr(self.c, "phase", None), "result": result,
         })
 
-    # ---- 7 个保证搜索点 ----
+    # ---- 保证搜索点: 原点 + 覆盖环(RING_N 点等分, 半径 RING_R; 均回退到 HEX_R/6) ----
     @staticmethod
     def search_points():
+        r = Problem3Robot.RING_R if Problem3Robot.RING_R is not None else HEX_R
+        n = Problem3Robot.RING_N if Problem3Robot.RING_N is not None else 6
         pts = [(0.0, 0.0)]
-        for k in range(6):
-            a = k * 60 * DEG
-            pts.append((HEX_R*math.cos(a), HEX_R*math.sin(a)))
+        for k in range(n):
+            a = k * (360.0/n) * DEG
+            pts.append((r*math.cos(a), r*math.sin(a)))
         return pts
 
     def log(self, *a):
@@ -667,7 +679,7 @@ class Problem3Robot:
             self.log("覆盖点访问顺序(概率图排序): " +
                      " -> ".join("(%.0f,%.0f)" % p for p in pts))
 
-        # 保证层: 依次访问 7 个覆盖点, 蛇形扫描(发现 + 免费交会)
+        # 保证层: 依次访问全部覆盖点, 蛇形扫描(发现 + 免费交会)
         self._phase("coverage")
         for i, (px, py) in enumerate(pts):
             order = list(range(1, N_CH+1)) if i % 2 == 0 else list(range(N_CH, 0, -1))
