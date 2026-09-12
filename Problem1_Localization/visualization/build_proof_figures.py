@@ -15,7 +15,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Polygon, Rectangle, Wedge
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 
@@ -71,8 +73,7 @@ def add_panel_label(ax, label):
 
 
 def finish(fig, stem, title, note, diagnostics, *, top=.90, bottom=.12):
-    fig.suptitle(title, fontsize=10.2, y=.985)
-    fig.text(.5, .018, note, ha="center", va="bottom", fontsize=7.0, color=DARK_GRAY)
+    """Export a clean figure body; figure number/title/caption belong in the paper."""
     fig.subplots_adjust(left=.075, right=.985, bottom=bottom, top=top,
                         wspace=.24, hspace=.30)
     saved = save_cumcm(fig, OUT / stem, dpi=600)
@@ -135,7 +136,7 @@ def main_geometry_figure(records, diagnostics):
     span = max(np.ptp(outer, axis=0).max() * .74, 18)
     ax.set(xlim=(mid[0]-span, mid[0]+span), ylim=(mid[1]-span, mid[1]+span),
            xlabel="$x$ (m)", ylabel="$y$ (m)")
-    ax.set_aspect("equal"); polish_axes(ax, grid=False); ax.legend(loc="lower left", fontsize=6.8)
+    ax.set_aspect("equal"); polish_axes(ax, grid=False)
     add_panel_label(ax, "(b) 公共交集定位区域")
 
     ax = axes[1, 0]
@@ -156,7 +157,7 @@ def main_geometry_figure(records, diagnostics):
     ax.plot(*closed(inner).T, color=DARK_BLUE, lw=1.15)
     ax.scatter(*target, marker="*", s=55, color=RED, zorder=8, label="真实位置")
     ax.set(xlim=(lo[0], hi[0]), ylim=(lo[1], hi[1]), xlabel="$x$ (m)", ylabel="$y$ (m)")
-    ax.set_aspect("equal"); polish_axes(ax, grid=False); ax.legend(loc="lower left", fontsize=6.6)
+    ax.set_aspect("equal"); polish_axes(ax, grid=False)
     add_panel_label(ax, "(c) 自适应网格内外包")
 
     ax = axes[1, 1]
@@ -176,21 +177,36 @@ def main_geometry_figure(records, diagnostics):
         ax.scatter(outside[:, 0], outside[:, 1], s=28, facecolors="none", edgecolors=RED,
                    lw=.9, zorder=8, label="直径圆未覆盖点")
     pad = max(np.ptp(inner, axis=0).max() * .20, 3)
+    y_low = inner[:,1].min()-pad
+    y_high = inner[:,1].max()+pad
+    # Reserve an empty information band above the circles so the metrics never
+    # cover geometric evidence or collide with the panel heading.
+    y_high += .22 * (y_high-y_low)
     ax.set(xlim=(inner[:,0].min()-pad, inner[:,0].max()+pad),
-           ylim=(inner[:,1].min()-pad, inner[:,1].max()+pad),
+           ylim=(y_low, y_high),
            xlabel="$x$ (m)", ylabel="$y$ (m)")
     ax.set_aspect("equal"); polish_axes(ax, grid=False)
     area, _ = polygon_area_centroid(inner)
-    ax.text(.98, .98, f"$A={area:.1f}$ m²\n$D={diameter:.2f}$ m\n$r^*={radius:.2f}$ m\n$2r^*/D={ratio:.4f}>1$",
-            transform=ax.transAxes, ha="right", va="top", fontsize=7.2,
-            bbox=dict(boxstyle="round,pad=.28", facecolor="white", edgecolor=GRAY, alpha=.94))
-    ax.legend(loc="lower left", fontsize=6.25)
+    ax.text(.985, .965,
+            f"$A={area:.1f}$ m²,  $D={diameter:.2f}$ m,  $r^*={radius:.2f}$ m,  $2r^*/D={ratio:.4f}>1$",
+            transform=ax.transAxes, ha="right", va="top", fontsize=5.8)
     add_panel_label(ax, "(d) 直径与最小覆盖圆")
+
+    shared_handles = [
+        Line2D([], [], marker="^", ls="none", color=DARK_BLUE, markersize=4.5, label="观测站"),
+        Line2D([], [], marker="*", ls="none", color=RED, markersize=6.5, label="真实位置"),
+        Patch(facecolor=ORANGE, edgecolor=ORANGE, alpha=.20, label="$K_{out}$"),
+        Patch(facecolor=BLUE, edgecolor=DARK_BLUE, alpha=.25, label="$K_{in}$"),
+        Line2D([], [], color=DARK_GRAY, ls="--", lw=1.0, label="直径圆 $D/2$"),
+        Line2D([], [], color=PURPLE, ls="-.", lw=1.4, label="最小覆盖圆 $r^*$"),
+    ]
+    fig.legend(handles=shared_handles, loc="lower center", bbox_to_anchor=(.53, .006),
+               ncol=6, fontsize=6.2, frameon=False, handlelength=2.0, columnspacing=1.0)
 
     note = ("算例 number_014_5，5站、示向误差界±1°；红星仅用于离线验证。"
             f" 数值包络分辨率 {region.boundary_width:.5f} m，2r*/D={ratio:.4f}>1，直径圆不能覆盖。")
     finish(fig, "fig01_model1_geometry_proof", "图1  有界测向误差下定位区域的构造、包络验证与覆盖判据",
-           note, diagnostics, top=.91, bottom=.105)
+           note, diagnostics, top=.965, bottom=.13)
 
     theta = np.linspace(0, 2*np.pi, 361)
     columns = {
@@ -229,14 +245,16 @@ def convergence_figure(diagnostics):
         ax.set_xscale("log", base=2); ax.invert_xaxis(); polish_axes(ax)
         add_panel_label(ax, f"({chr(97+i)}) {key} 的内外包收敛")
         if i == 0:
-            ax.legend(ncol=3, loc="lower right", fontsize=6.8)
+            handles, labels = ax.get_legend_handles_labels()
     axes[-1].set_xlabel("终止网格边长 $h$ (m，对数尺度；由粗到细)")
     axes[-1].set_xticks(d.requested_resolution.to_numpy())
     axes[-1].set_xticklabels([f"{value:g}" for value in d.requested_resolution])
+    fig.legend(handles, labels, ncol=3, loc="lower center", bbox_to_anchor=(.53, .008),
+               fontsize=6.8, frameon=False)
     note = (r"同一观测算例逐级加密；阴影为 $K_{in}\subseteq\Omega\subseteq K_{out}$ 导出的确定性数值包络。"
             " 三项界宽同步收缩，说明结论不依赖偶然网格采样。")
     finish(fig, "fig02_grid_convergence", "图2  网格加密使面积、直径与最小覆盖圆半径上下界同步收敛",
-           note, diagnostics, top=.89, bottom=.115)
+           note, diagnostics, top=.965, bottom=.105)
     out = d.copy()
     for lower, upper, _, key in specs:
         out[f"rel_gap_{key}"] = (out[upper]-out[lower]) / ((out[upper]+out[lower])/2)
@@ -257,9 +275,12 @@ def draw_cover_case(ax, poly, subtitle, *, actual=False):
     outside = poly[np.linalg.norm(poly-dcenter, axis=1) > dradius + 1e-8]
     if len(outside):
         ax.scatter(outside[:,0], outside[:,1], s=34, facecolors="none", edgecolors=RED, lw=1.0, zorder=7)
-    pad = max(np.ptp(poly, axis=0).max() * .22, .5)
-    ax.set(xlim=(poly[:,0].min()-pad, poly[:,0].max()+pad),
-           ylim=(poly[:,1].min()-pad, poly[:,1].max()+pad))
+    xmin = min(poly[:,0].min(), center[0]-radius, dcenter[0]-dradius)
+    xmax = max(poly[:,0].max(), center[0]+radius, dcenter[0]+dradius)
+    ymin = min(poly[:,1].min(), center[1]-radius, dcenter[1]-dradius)
+    ymax = max(poly[:,1].max(), center[1]+radius, dcenter[1]+dradius)
+    pad = max(xmax-xmin, ymax-ymin) * .07
+    ax.set(xlim=(xmin-pad, xmax+pad), ylim=(ymin-pad, ymax+pad))
     ax.set_aspect("equal"); polish_axes(ax, grid=False)
     ax.set_xlabel(subtitle, labelpad=5)
     ax.text(.98, .98, f"$2r^*/D={2*radius/diameter:.4f}$", transform=ax.transAxes,
@@ -298,7 +319,7 @@ def theory_figure(records, diagnostics):
     note = ("黑实线为实现直径的最远点对，灰虚线为半径 $D/2$ 的直径圆，紫点划线为最小覆盖圆。"
             r" 平面荣格界给出 $1\leq 2r^*/D\leq 2/\sqrt{3}\approx 1.1547$。")
     finish(fig, "fig03_jung_covering", "图3  区域直径与圆覆盖并不等价：二点支撑、三点支撑与荣格极端情形",
-           note, diagnostics, top=.86, bottom=.205)
+           note, diagnostics, top=.965, bottom=.17)
     pd.DataFrame({k: pd.Series(v) for k, v in rows.items()}).to_csv(
         DATA / "fig03_theory.csv", index=False, encoding="utf-8-sig")
 
@@ -340,13 +361,13 @@ def validation_figure(records, diagnostics):
     ax.axhline(1, color=RED, lw=1.1, ls="--", label=r"理论上界 $\rho=1$")
     ax.set(xticks=np.arange(len(levels)), xticklabels=levels, ylim=(0,1.08),
            xlabel="检测点数量（个）", ylabel=r"$\rho=\Vert c^*-S\Vert_2/r^*$")
-    ax.legend(loc="upper right", fontsize=6.8); polish_axes(ax)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.055), fontsize=6.8); polish_axes(ax)
     add_panel_label(ax, "(b) 最小覆盖圆中心的无量纲误差")
 
     note = ("共450组受控仿真：每类150组，全部满足原始±1°角域约束。"
             rf" 所有算例均有 $\rho\leq 1$（最大值 {d.rho_mec.max():.4f}），直接验证外包最小圆的安全覆盖性。")
     finish(fig, "fig04_monte_carlo_validation", "图4  450组随机算例同时验证真值包含与最小覆盖圆安全性",
-           note, diagnostics, top=.88, bottom=.17)
+           note, diagnostics, top=.95, bottom=.13)
     d.to_csv(DATA / "fig04_validation_cases.csv", index=False, encoding="utf-8-sig")
 
 
