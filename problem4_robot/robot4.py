@@ -554,6 +554,15 @@ class Problem4Robot:
     #      (该巡回已近"面积/边长+直径"下界), 清除巡回 n=10~16 时 2-opt 已足够 ->
     #      病理集 10 类均值差异 +0.2%(默认反而慢), 低于门槛 -> 维持 "2opt"。----
     TSP_MODE = "2opt"
+    # ---- MEC 就绪冻结: 一旦 Ω_c 的最小覆盖圆半径 <= R_CLEAR, 真源必在该圆内
+    #      (G_c ∈ Ω_c ⊆ B(z_c, r_c), r_c <= 20 m), 清除点已被**确定性认证**; 此后继续测量
+    #      最多只是进一步缩小区域, 不会改变"该点可保证清除"的结论 —— 故进入 ready 状态、
+    #      不再测量该频道。不做绕路: 仍按原 δ 顺路规则, 否则并入扫描后队列;
+    #      清除失败仍由归航与恢复闭环兜底。默认关(需配对实验验证后启用)。----
+    #      MEC_FREEZE 默认 **开启**(经固定误差场配对实验采纳:
+    #      50%定向 −590.3 s/CI[−611,−570]/100% 案例变快, 100%定向 −500.1 s/CI[−517,−483];
+    #      移动量与清除失败次数不变; 病理集 2000 例 0 漏清且 10 类全部变快)。
+    MEC_FREEZE = True
     _core_cache = None
     _core_cache_key = None
 
@@ -571,6 +580,7 @@ class Problem4Robot:
         self.onway_failed = set()   # 顺路清除失败过的频道: 不再顺路重试, 留给扫描后批量清除
         self.locate_diag = {}       # 频道 -> 最近一次定位诊断(方式/Ω半径/交会角)
         self.supp_skipped = set()   # 因补测距离上限被跳过、改走二分归航的频道
+        self.ready_pos = {ch: None for ch in range(1, N_CH+1)}   # MEC 冻结后的认证清除点
         ov = getattr(Problem4Robot, "MESH_PTS_OVERRIDE", None)
         if ov:
             self.pts = [tuple(p) for p in ov]          # 最小覆盖设计(格点块, 无空洞)
@@ -1051,7 +1061,7 @@ class Problem4Robot:
         for i, (mi, px, py) in enumerate(seq):
             order = list(range(1, N_CH+1)) if i % 2 == 0 else list(range(N_CH, 0, -1))
             for ch in order:
-                if self.state[ch] in ("excluded", "cleared"):
+                if self.state[ch] in ("excluded", "cleared", "ready"):
                     continue
                 # 几何冗余过滤: 已发现频道只在交会角有改善时测(否则跳过)
                 if self.state[ch] == "found" and not self._worth_measuring(ch, px, py):
@@ -1076,14 +1086,30 @@ class Problem4Robot:
                 if self.state[ch] is None:
                     if all(all(v in self.ns_at[ch] for v in t) for t in self.cert_tris):
                         self.state[ch] = "excluded"
+            # MEC 就绪冻结: 一旦认证通过即固定清除点并停止该频道的后续测量(不强制绕路)
+            if getattr(Problem4Robot, "MEC_FREEZE", False):
+                for ch in range(1, N_CH+1):
+                    if self.state[ch] != "found" or self.ready_pos[ch] is not None:
+                        continue
+                    if self.near_pos[ch] is not None:
+                        self.ready_pos[ch] = self.near_pos[ch]
+                        self.state[ch] = "ready"
+                        continue
+                    pt = self._locate_quick(ch, tag="MEC冻结")
+                    if (pt is not None
+                            and self.locate_diag.get(ch, {}).get("method") == "mec"):
+                        self.ready_pos[ch] = (pt[0], pt[1])
+                        self.state[ch] = "ready"
             # 受限顺路清除
             if ON_WAY_DELTA is not None and i + 1 < len(seq):
                 nxt = (seq[i+1][1], seq[i+1][2])
                 self._phase("on_way")
                 for c2 in range(1, N_CH+1):
-                    if self.state[c2] != "found" or c2 in self.onway_failed:
+                    if self.state[c2] not in ("found", "ready") or c2 in self.onway_failed:
                         continue
-                    if self.near_pos[c2]:
+                    if self.state[c2] == "ready":
+                        Q, qsrc, qr, qa = self.ready_pos[c2], "mec_frozen", None, None
+                    elif self.near_pos[c2]:
                         Q, qsrc, qr, qa = self.near_pos[c2], "near", None, None
                     else:
                         Q = self._locate_quick(c2, tag=f"顺路@{i}")
@@ -1120,7 +1146,12 @@ class Problem4Robot:
         # 状态层: 快速定位分类 (任务元组: ch, x, y, src, Ω半径, 交会角)
         clear_tasks = []; supp_tasks = []
         for ch in range(1, N_CH+1):
-            if self.state[ch] != "found":
+            if self.state[ch] not in ("found", "ready"):
+                continue
+            if self.state[ch] == "ready" and self.ready_pos[ch] is not None:
+                # MEC 冻结频道: 直接使用已认证的清除点, 无需再定位/补测
+                clear_tasks.append((ch, self.ready_pos[ch][0], self.ready_pos[ch][1],
+                                    "mec_frozen", R_CLEAR, self.locate_diag.get(ch, {}).get("cross_angle_deg")))
                 continue
             if self.near_pos[ch] is not None:
                 clear_tasks.append((ch, self.near_pos[ch][0], self.near_pos[ch][1],
@@ -1237,7 +1268,8 @@ class Problem4Robot:
             "path_points": len(seq),
             "certificate_index_ok": bool(path_ok),
             "cleared_count": self.cleared_count,
-            "found_channels": sum(1 for s in self.state.values() if s == "found"),
+            "found_channels": sum(1 for s in self.state.values()
+                                  if s in ("found", "ready")),
             "excluded_channels": sum(1 for s in self.state.values() if s == "excluded"),
             "unresolved_channels": len(unresolved),
             "unresolved_list": unresolved,
