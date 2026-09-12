@@ -1,8 +1,9 @@
 # 在环逐局明细(由 loop_compare.py 从 problem3_robot/logs/*.jsonl 导出)
-# A: problem3_robot/logs/p3_log_*ring1150n9_a*.jsonl
+# A: problem3_robot/logs/p3_log_*ring1150n9_[ap]*.jsonl
 # B: problem3_robot/logs/p3_log_*ring6pt_c*.jsonl
 arm,file,ring_r,ring_n,n_src,T_s,movement_m,measure,clear_ok,clear_fail,actions
 A,p3_log_20260912_150005_ring1150n9_a01.jsonl,,,,0,0,0,0,0,0  # 空局(未产生有效数据)
+A,p3_log_20260912_150416_ring1150n9_p01.jsonl,1150.0,9,15,4739.0,17880.2,183,15,0,200
 A,p3_log_20260912_150448_ring1150n9_a_01.jsonl,1150.0,9,16,4561.4,16887.0,185,16,1,204
 A,p3_log_20260912_150450_ring1150n9_a_02.jsonl,1150.0,9,11,3864.6,13698.0,180,11,0,193
 A,p3_log_20260912_150507_ring1150n9_a_03.jsonl,1150.0,9,10,3956.3,13941.5,188,10,0,200
