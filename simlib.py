@@ -46,7 +46,9 @@ exp = load_module("exp", ROOT / "2026B_solution" / "verify" / "experiment.py")
 SPEED = 5.0            # 移动速度 m/s
 T_MEASURE = 5.0        # 单次检测(含测向)
 T_SWITCH = 1.0         # 频道切换
-T_CLEAR_OK = 4.0       # 成功清除: 实机标定 ≈4 s(题面 5 s 高估 1 s/次; 两问独立标定 1.012/0.994)
+T_CLEAR_OK = 5.0       # 成功清除: 3(执行)+2(确认) = 5 s, 见附件1/附件2 的标准计时公式
+                       # 注: 曾"标定为 4 s", 实为客户端把 /clear 误记一次换频(+1 s)所致,
+                       #     已更正(clear 不换频), 计时回到题设公式。
 T_CLEAR_FAIL = 3.0     # 清除未发现
 T_ENTER_EXIT = 0.0     # 无固定项: 实测残余为**高估**方向, 加常数项只会更偏(见 time_model_audit.py)
 # 标定结果(同一局回算 vs 模拟器虚拟时间, 86 局):
@@ -211,11 +213,8 @@ class SimClient:
 
     def clear(self, x, y, ch):
         self._move(x, y)
-        if ch != self.channel:
-            self.n_switch += 1
-            self._p()[4] += 1
-            self.ledger.append((self._phase, "switch", 1.0))
-        self.channel = ch
+        # 题设: /clear **不换频**, 也不改变测向机频道状态(附件1/附件2);
+        # 此前在此记 +1 换频并以"清除 4 s"补偿, 属错误建模, 已更正为 5 s 清除。
         self.n_clear += 1
         r = self.env.clear(np.array([x, y]), ch)
         if r == "success":

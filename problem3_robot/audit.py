@@ -197,10 +197,7 @@ class MockClient:
 
     def clear(self, x, y, ch):
         self._move(x, y)
-        if ch != self.channel:
-            self.n_switch += 1
-            self._p()[3] += 1
-        self.channel = ch
+        # 题设: /clear 不换频, 也不改变测向机频道状态(附件1/附件2)
         self.n_clear += 1
         self._p()[2] += 1
         r = self.env.clear(np.array([x, y]), ch)
@@ -214,7 +211,7 @@ class MockClient:
         pass
 
 
-T_CLEAR_OK, T_ENTER_EXIT = 4.0, 0.0     # 实机标定(见 simlib / time_model_audit.py)
+T_CLEAR_OK, T_ENTER_EXIT = 5.0, 0.0     # 题设标准: 成功清除 3+2=5 s(附件1/附件2)
 
 def sim_time(cli):
     """统一计时口径(实机标定): 移动/5 + 检测*5 + 换频*1 + 成功清除*4 + 失败清除*3。"""

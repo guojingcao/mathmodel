@@ -339,12 +339,11 @@ class SimClient:
         if r.get("accepted") is not True:
             return False, "rejected"
         self.dist += math.hypot(x-self.position[0], y-self.position[1])
-        if channel != self.channel:
-            self.n_switch += 1
+        # 题设: /clear 不换频, 也不改变测向机频道状态(附件1/附件2)
         self.n_clear += 1
         if r.get("clear_result") == "success":
             self.n_clear_ok += 1
-        self.position = (x, y); self.channel = channel
+        self.position = (x, y)
         return True, r.get("clear_result")
 
     def exit(self):

@@ -254,8 +254,8 @@ class MockClient:
         r, svd = self.env.measure(np.array([x, y]), ch); return True, r, svd
     def clear(self, x, y, ch):
         self._move(x, y)
-        if ch != self.channel: self.n_switch += 1
-        self.channel = ch; self.n_clear += 1; self._p()[2] += 1
+        # 题设: /clear 不换频, 也不改变测向机频道状态(附件1/附件2)
+        self.n_clear += 1; self._p()[2] += 1
         r = self.env.clear(np.array([x, y]), ch)
         if r != 'success': self.fail += 1
         else: self.n_clear_ok += 1
