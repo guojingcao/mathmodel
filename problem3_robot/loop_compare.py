@@ -74,6 +74,22 @@ def main():
     pb = sys.argv[2] if len(sys.argv) > 2 else "problem3_robot/logs/p3_log_*ring6pt_c*.jsonl"
     na = sys.argv[3] if len(sys.argv) > 3 else "A 采纳(1150m x 9 点)"
     nb = sys.argv[4] if len(sys.argv) > 4 else "B 回退(1200m x 6 点)"
+    # 日志目录被 .gitignore 忽略, 故把逐局明细导出到 results/ 以便入库复现
+    dump = os.environ.get("LOOP_DUMP")
+    if dump:
+        with open(dump, "w", encoding="utf-8") as fh:
+            fh.write("# 在环逐局明细(由 loop_compare.py 从 problem3_robot/logs/*.jsonl 导出)\n")
+            fh.write(f"# A: {pa}\n# B: {pb}\n")
+            fh.write("arm,file,ring_r,ring_n,n_src,T_s,movement_m,measure,clear_ok,clear_fail,actions\n")
+            for tag, pat in (("A", pa), ("B", pb)):
+                for r in load(pat):
+                    if r["empty"]:
+                        fh.write(f"{tag},{r['file']},,,,0,0,0,0,0,0  # 空局(未产生有效数据)\n")
+                        continue
+                    fh.write(f"{tag},{r['file']},{r['ring']},{r['ringn']},{r['n_src']},"
+                             f"{r['T']:.1f},{r['dist']:.1f},{r['meas']},{r['clr']},"
+                             f"{r['fail']},{r['actions']}\n")
+        print(f"[导出] 逐局明细 -> {dump}")
     A = describe(na, load(pa))
     B = describe(nb, load(pb))
     a = stat(A, "T"); b = stat(B, "T")
