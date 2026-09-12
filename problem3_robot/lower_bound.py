@@ -194,7 +194,8 @@ def main():
     SW = np.mean([r["sw"] for r in rows])
     CL = np.mean([r["clr"] for r in rows])
     FA = np.mean([r["fail"] for r in rows])
-    print(f"\n=== 当前解(候选 1150x9 + 透镜, 配对 {n_case} 例) 与下界对比 ===")
+    print(f"\n=== 当前解(候选 {rb.Problem3Robot.RING_R:.0f}x{rb.Problem3Robot.RING_N} + "
+          f"透镜={rb.Problem3Robot.DOP_PRESCREEN}, 配对 {n_case} 例) 与下界对比 ===")
     print(f"  {'分量':<18}{'当前':>10}{'下界':>10}{'差':>10}{'差占比':>9}")
     print(f"  {'移动 L (m)':<18}{L:>10.0f}{np.mean([r['L_lb'] for r in rows]):>10.0f}"
           f"{L-np.mean([r['L_lb'] for r in rows]):>10.0f}"
