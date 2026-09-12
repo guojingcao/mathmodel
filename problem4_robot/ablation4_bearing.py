@@ -27,8 +27,18 @@ from simlib import case_env, sim_time, check_clearance   # noqa: E402
 
 
 def _ep_sum(eps, key):
-    v = [e.get(key) for e in eps if isinstance(e.get(key), (int, float))]
-    return float(sum(v)) if v else 0.0
+    """累加归航 episode 的开销。真实键名: episode_time_s / episode_moves_m,
+    以及 cost 字典里的 n_measure / n_clear(见 robot4._close_episode)。"""
+    tot = 0.0
+    for e in eps:
+        if key in ("n_measure", "n_clear", "n_switch", "n_clear_ok", "fail"):
+            c = e.get("cost") or {}
+            v = c.get(key)
+        else:
+            v = e.get(key)
+        if isinstance(v, (int, float)):
+            tot += float(v)
+    return tot
 
 
 def run_arm(order, p_dir, n, seed):
@@ -55,9 +65,9 @@ def run_arm(order, p_dir, n, seed):
                 n_src=chk["n_src"], dist=cli.dist, meas=cli.n_measure, fail=cli.fail,
                 clear_n=cli.n_clear, unresolved=len(chk.get("missing_src") or []),
                 consistent=chk["consistent"], eps=len(eps),
-                ep_move=_ep_sum(eps, "movement_distance_m"),
-                ep_meas=_ep_sum(eps, "measure_count"),
-                ep_time=_ep_sum(eps, "virtual_time_s"),
+                ep_move=_ep_sum(eps, "episode_moves_m"),
+                ep_meas=_ep_sum(eps, "n_measure"),
+                ep_time=_ep_sum(eps, "episode_time_s"),
                 first_ok=sum(1 for e in tried if e.get("cleared_at_bearing") == 0),
                 later_ok=sum(1 for e in tried
                              if isinstance(e.get("cleared_at_bearing"), int)
