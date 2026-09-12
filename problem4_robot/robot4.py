@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 问题4 机器人程序 —— 全向 + 定向干扰源的自动定位与清除
 
@@ -597,6 +597,9 @@ class Problem4Robot:
     #      依据: 12 局在环日志中 21 次失败里 16 次来自 12 点圆周试探(76.2%)。----
     NEIGHBOR_MODE = "rings"
     NORMAL2_STOP = False
+    # ---- 访问顺序覆盖(P4-B 前缀观测质量实验): None = 内置 NN+2-opt;
+    #      给定网格编号的排列则按该顺序访问(必须是全网格点的排列)。----
+    ORDER_OVERRIDE = None
     _core_cache = None
     _core_cache_key = None
 
@@ -789,9 +792,14 @@ class Problem4Robot:
     def _order_points(self):
         """网格点访问序列 [(mesh_index, x, y), ...]。
 
-        31 个网格点恰好各访问一次(锚点原点不再重复作为待访问点);
-        序列元素携带真实网格编号, 三角形证书必须用该编号而非访问次序。
+        每点恰好访问一次(锚点原点不重复作为待访问点); 序列元素携带**真实网格编号**,
+        三角形证书必须用该编号而非访问次序。P4-B 实验可用 ORDER_OVERRIDE 指定顺序。
         """
+        ov = getattr(Problem4Robot, "ORDER_OVERRIDE", None)
+        if ov is not None:
+            ids = list(ov)
+            assert sorted(ids) == list(range(len(self.pts))), "ORDER_OVERRIDE 必须是全点排列"
+            return [(i, self.pts[i][0], self.pts[i][1]) for i in ids]
         pts = self.pts
         start = (0.0, 0.0)
         core_idx = set()

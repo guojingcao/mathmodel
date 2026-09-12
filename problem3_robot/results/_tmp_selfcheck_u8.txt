@@ -1,0 +1,17 @@
+python : Traceback (most recent call last):
+At line:1 char:160
++ ... ONIOENCODING="utf-8"; python problem3_robot/selfcheck.py 2>&1 | Tee-O ...
++                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "D:\My_MathModeling_Project\problem3_robot\selfcheck.py", line 130, in <module>
+    n = robot.run()
+        ^^^^^^^^^^^
+  File "D:\My_MathModeling_Project\problem3_robot\robot.py", line 672, in run
+    pts = self.search_points()
+          ^^^^^^^^^^^^^^^^^^^^
+  File "D:\My_MathModeling_Project\problem3_robot\robot.py", line 582, in search_points
+    r = Problem3Robot.RING_R if Problem3Robot.RING_R is not None else HEX_R
+                                ^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'Problem3Robot' has no attribute 'RING_R'

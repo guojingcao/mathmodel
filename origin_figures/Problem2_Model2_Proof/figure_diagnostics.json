@@ -1,0 +1,53 @@
+{
+  "fonts": {
+    "english": "Times New Roman",
+    "chinese": "SimSun",
+    "times_new_roman_available": true,
+    "simsun_available": true
+  },
+  "fig01_selection_mechanism": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(6.55)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig01_selection_mechanism.pdf",
+    "[PASS] fig01_selection_mechanism.svg",
+    "[PASS] fig01_selection_mechanism.png"
+  ],
+  "fig02_layout_regions": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(6.15)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[WARN] Non-theme colour detected",
+    "[PASS] fig02_layout_regions.pdf",
+    "[PASS] fig02_layout_regions.svg",
+    "[PASS] fig02_layout_regions.png"
+  ],
+  "fig03_layout_performance": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(5.65)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig03_layout_performance.pdf",
+    "[PASS] fig03_layout_performance.svg",
+    "[PASS] fig03_layout_performance.png"
+  ],
+  "fig04_paired_robustness": [
+    "[PASS] Font (English): Times New Roman",
+    "[PASS] Font (Chinese): SimSun",
+    "[WARN] Non-standard figure size (np.float64(7.01), np.float64(6.1)) in",
+    "[PASS] No in-axes title",
+    "[PASS] Line-weight hierarchy",
+    "[PASS] Restrained palette",
+    "[PASS] fig04_paired_robustness.pdf",
+    "[PASS] fig04_paired_robustness.svg",
+    "[PASS] fig04_paired_robustness.png"
+  ],
+  "representative_repetition": 28
+}
