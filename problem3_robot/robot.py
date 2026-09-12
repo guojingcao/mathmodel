@@ -40,6 +40,7 @@ R_NEAR = 5.0             # 近距阈值
 R_GUARANTEE = 1000.0     # 全向源最小有效接收半径(保证覆盖用)
 HEX_R = 1200.0           # 回退(六边形)覆盖环半径; 采纳版的环半径见类属性 RING_R=1150.0
 N_CH = 20                # 频道数
+N_SRC_MAX = 16           # 题设源数上界(用于计数证书: 确认 16 个源后其余频道确定性判空)
 
 
 # ==================== 模拟器 HTTP 客户端 ====================
@@ -193,6 +194,10 @@ class SimClient:
             "phase_stats": phases,                      # 分阶段移动距离/动作数/虚拟时间
             "supp_task_count": getattr(self, "aux_need", None),   # 基础扫描后需补测频道数(可观测)
             "supp_group_merged": getattr(self, "supp_group_merged", None),  # 模块G 合并掉的停靠点数
+            "prob_cert_fired": getattr(self, "prob_cert_fired", None),   # 模块P 计数证书是否触发
+            "prob_skip_ig": getattr(self, "prob_skip_ig", None),         # 模块P 跳过的零增益测量数
+            "prob_min_presence": (None if getattr(self, "prob_min_presence", None) is None
+                                  else round(self.prob_min_presence, 6)),
             "aux_fired": getattr(self, "aux_fired", None),        # 辅助观测是否触发
             "aux_resolved": getattr(self, "aux_resolved", None),  # 辅助观测消除的补测任务数
             "locate_stats": self._locate_stats(),       # 定位方式与 Ω 半径统计
@@ -532,6 +537,27 @@ class Problem3Robot:
     #   λ∈{0.02,0.05,0.10,0.20} 结果完全相同(候选仅 18 点), 故 λ 不是需调参的自由度。
     DOP_PRESCREEN = True
     LENS_TRAVEL_W = 0.05
+    # ===== 模块P: 贝叶斯概率图(网格化后验 + 式(19) 熵减最大) =====
+    #   PROB_ORDER      : 覆盖点访问顺序按"存在概率 × 可收到概率"排序(每次访问后重算),
+    #                     **不删任何覆盖点**(保证不变), 只改顺序 -> 早发现源即早清除, 省后续测量。
+    #                     **实测否决**: 该族被路程以约 20:1 压倒(w=0.5/1/3 分别 +23.1 %/+16.7 %/+7.0 %),
+    #                     因为 8 点环的角序本身已是最短回路, 换序省的测量(≤4 次)远小于多跑的路。
+    #   PROB_CHAN_ORDER : 点内频道序按概率图 —— **实测否决**(+0.18 %, 换频反而 +7.5)。
+    #   PROB_SKIP_IG    : **已采纳** —— 式(19) 当**过滤器**用: 对"已发现但未清除"的频道,
+    #                     若概率图判定"从当前点根本收不到"(存在后验全在 R_c 上界 1500 m 之外),
+    #                     则该测量的期望信息增益 ≈ 0, 直接不测。安全性: 只影响该频道的定位
+    #                     质量, 不触碰任何覆盖/排除证书。配对 300 例 -133.2 s(-3.23 %),
+    #                     CI [-138,-128], **100 % 案例更快**, 检测 166.0->143.7、换频 157.4->135.7。
+    #   PROB_COUNT_CERT : **已采纳** —— 计数证书: 题设 n_src<=16, 已确认有源频道数达 16 时
+    #                     其余频道**确定性**判空(不再测)。-4.5 s(-0.11 %), 触发率 13~14 %
+    #                     (与 n_src=16 的理论比例 1/7 一致)。
+    PROB_ORDER = False
+    PROB_CHAN_ORDER = False
+    PROB_SKIP_IG = True
+    PROB_SKIP_IG_EPS = 1e-3
+    PROB_COUNT_CERT = True
+    # 排点时的路程权重(量纲: 每 km 扣多少"增益单位"; 增益量级 ~0-20, 故 0.05 等于无约束)
+    PROB_TRAVEL_W = 1.0
     # 模块G(实验, 默认关): 补测阶段分组 —— 相距 <= SUPP_GROUP_R 的补测点合并为同一停靠点
     #   经配对实验否决: R=300 无效果(+1.3 s), R=600 +33.4 s, R=1000 +134.2 s
     SUPP_GROUP_R = None
@@ -709,20 +735,80 @@ class Problem3Robot:
             self.log("覆盖点访问顺序(概率图排序): " +
                      " -> ".join("(%.0f,%.0f)" % p for p in pts))
 
+        # ===== 模块P(默认关): 贝叶斯概率图 =====
+        self.prob_ev = {ch: 1.0 for ch in range(1, N_CH+1)}     # 证据 Π P(z) (用于存在后验)
+        self.prob_cert_fired = 0
+        self.prob_skip_ig = 0
+        self.prob_min_presence = None
+        pmaps = None
+        if (self.PROB_ORDER or self.PROB_CHAN_ORDER or self.PROB_COUNT_CERT
+                or self.PROB_SKIP_IG):
+            from prob_map import ProbMap
+            pmaps = {ch: ProbMap() for ch in range(1, N_CH+1)}
+            self.log("概率图已启用: 网格 %d 格/频道 × %d 频道"
+                     % (len(pmaps[1].p), N_CH))
+
+        def presence(ch):
+            """该频道"存在源"的后验概率(先验 0.65, 用证据 Π P(z) 更新)。"""
+            ev = self.prob_ev[ch]
+            return 0.65*ev/(0.65*ev + 0.35) if ev > 0 else 0.0
+
+        def pm_update(ch, z, s, theta):
+            if pmaps is None or ch not in pmaps:
+                return
+            pz = pmaps[ch].update(z, s, theta or 0.0)
+            self.prob_ev[ch] *= max(pz, 1e-12)
+            pr = presence(ch)
+            if self.prob_min_presence is None or pr < self.prob_min_presence:
+                self.prob_min_presence = pr
+
         # 保证层: 依次访问全部覆盖点, 蛇形扫描(发现 + 免费交会)
         self._phase("coverage")
-        for i, (px, py) in enumerate(pts):
-            order = list(range(1, N_CH+1)) if i % 2 == 0 else list(range(N_CH, 0, -1))
-            self.log(f"搜索点 {i}: ({px:.0f},{py:.0f})  频道序 {'1->20' if i%2==0 else '20->1'}")
+        remaining = list(pts)
+        i = -1
+        while remaining:
+            i += 1
+            if self.PROB_ORDER and pmaps is not None:
+                # 式(19) 的代价感知贪心: 取"存在概率 × 该点可收到概率"之和最大者,
+                # 并扣"每 km 的路程代价"(PROB_TRAVEL_W, 量纲与增益一致; 0.05 属于标度错误)
+                w = getattr(Problem3Robot, "PROB_TRAVEL_W", 1.0)
+                best, best_v = None, None
+                for q in remaining:
+                    v = 0.0
+                    for ch in range(1, N_CH+1):
+                        if self.state[ch] in ("excluded", "cleared"):
+                            continue
+                        v += presence(ch)*pmaps[ch].detect_prob(q)
+                    dd = math.hypot(q[0]-c.position[0], q[1]-c.position[1])
+                    v -= w*dd/1000.0
+                    if best_v is None or v > best_v:
+                        best, best_v = q, v
+                px, py = best
+                remaining.remove(best)
+            else:
+                px, py = remaining.pop(0)
+            if self.PROB_CHAN_ORDER and pmaps is not None:
+                order = sorted(range(1, N_CH+1),
+                               key=lambda ch: -(presence(ch)*pmaps[ch].detect_prob((px, py))))
+            else:
+                order = list(range(1, N_CH+1)) if i % 2 == 0 else list(range(N_CH, 0, -1))
+            self.log(f"搜索点 {i}: ({px:.0f},{py:.0f})  频道序 "
+                     f"{'按概率图' if self.PROB_CHAN_ORDER else ('1->20' if i%2==0 else '20->1')}")
             for ch in order:
                 if self.state[ch] in ("excluded", "cleared"):
                     continue
                 # 已发现频道的冗余测量过滤: 当前点交会角无明显改善则跳过
                 if self.state[ch] == "found" and not self._worth_measuring(ch, px, py):
                     continue
+                # 模块P: 期望信息增益≈0 的测量直接跳过(该频道已发现, 不影响任何证书)
+                if (self.PROB_SKIP_IG and self.state[ch] == "found" and pmaps is not None):
+                    if pmaps[ch].detect_prob((px, py)) <= self.PROB_SKIP_IG_EPS:
+                        self.prob_skip_ig += 1
+                        continue
                 ok, res, svd = c.measure(px, py, ch)
                 if not ok:
                     continue
+                pm_update(ch, res, (px, py), svd)
                 if res == "direction":
                     if self.state[ch] is None:
                         self.state[ch] = "found"
@@ -732,6 +818,20 @@ class Problem3Robot:
                     self.near_pos[ch] = (px, py)
                 elif res == "no_signal":
                     self.visited_no_signal[ch].add(i)
+            # 计数证书(模块P): 题设 n_src<=16, 已确认有源数达 16 -> 其余频道确定性判空
+            if self.PROB_COUNT_CERT:
+                confirmed = sum(1 for ch in range(1, N_CH+1)
+                                if self.state[ch] in ("found", "cleared"))
+                if confirmed >= N_SRC_MAX:
+                    n_ex = 0
+                    for ch in range(1, N_CH+1):
+                        if self.state[ch] is None:
+                            self.state[ch] = "excluded"
+                            n_ex += 1
+                    if n_ex:
+                        self.prob_cert_fired = 1
+                        self.log(f"计数证书: 已确认 {confirmed} 个源(题设上界 {N_SRC_MAX}), "
+                                 f"其余 {n_ex} 个频道确定性判空, 不再测量")
             # 受限顺路清除: 已定位目标若"几乎在"去下一个覆盖点的路上, 顺路清除
             if self.ON_WAY_DELTA is not None and i + 1 < len(pts):
                 nxt = pts[i + 1]

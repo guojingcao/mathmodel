@@ -68,6 +68,9 @@ FROZEN3 = {
     "SUPP_REUSE": False, "SUPP_REUSE_ROUTE_GATE_M": 2000.0,
     "SUPP_REUSE_MIN_SAVING_M": 100.0, "SUPP_REUSE_MAX_PER_POINT": 1,
     "SUPP_REUSE_MIN_CROSS_DEG": 45.0, "SUPP_REUSE_DELETE_MODE": "cert",
+    # 贝叶斯概率图(已采纳两项): 零信息增益不测 + 计数证书(题设 n_src<=16)
+    "PROB_SKIP_IG": True, "PROB_SKIP_IG_EPS": 1e-3, "PROB_COUNT_CERT": True,
+    "PROB_ORDER": False, "PROB_CHAN_ORDER": False,
 }
 FROZEN4_CLS = {"USE_NEG_INFO": False, "USE_PSO": False, "DO_VERIFY": False,
                "NEIGHBOR_RINGS": (8.0, 15.0), "SUPP_MAX_DIST": None,
