@@ -1467,7 +1467,13 @@ def main(argv=None):
     ap.add_argument("--no-mesh-override", dest="no_mesh_override", action="store_true",
                     help="关闭最小覆盖设计点集(MESH_PTS_OVERRIDE), 回到 tri_mesh+补齐点; "
                          "配合 --mesh 可复现旧网格(如实机 A/B 的旧臂)")
+    ap.add_argument("--no-mec-freeze", dest="no_mec_freeze", action="store_true",
+                    help="关闭 MEC 就绪冻结(仅用于 A/B 对照; 默认开启)")
     args = ap.parse_args(argv)
+
+    if args.no_mec_freeze:
+        Problem4Robot.MEC_FREEZE = False
+        print("[config] MEC_FREEZE=False (A/B 对照: 不冻结)", flush=True)
 
     if args.no_mesh_override:
         Problem4Robot.MESH_PTS_OVERRIDE = None
