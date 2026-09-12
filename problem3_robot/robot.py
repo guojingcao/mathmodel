@@ -499,6 +499,12 @@ class Problem3Robot:
     # 受限顺路清除阈值(米): None=关闭; 数值=仅在插入增量 ΔL<=该值时才顺路清除。
     # 实测最优 δ≈300m(1000案例扫描 200/300/500/800/1200: 300 最优, 更大反而回归)。
     ON_WAY_DELTA = 300.0
+    # 混合门控(米): None=关闭(=正式版行为); 数值 g = 仅当任务点贴近覆盖环走廊, 即
+    #   | ‖T‖ - HEX_R | <= g
+    # 时才允许顺路清除, 其余任务一律留待末端成巡回清除。
+    # 依据: 覆盖环(r=HEX_R)与源所在内域在半径方向分离, 把内域任务穿插进覆盖过程会强制
+    # "出环-清除-回环"往返(联合调度实测 3 倍恶化); 环走廊上的任务则几乎不增加路程。
+    ONWAY_RING_GATE = None
     # ===== 外部改进模块开关(默认关, 用于消融实验) =====
     ORDER_BY_PROB = False    # 模块A: 贝叶斯概率图给覆盖点排访问顺序(替代固定六边形顺序)
     DOP_PRESCREEN = False    # 模块B: DOP(交会角)预筛候选补测点, 再按极小极大+路程择优
@@ -871,6 +877,10 @@ class Problem3Robot:
                           + math.hypot(Q[0]-nxt[0], Q[1]-nxt[1])
                           - math.hypot(cur[0]-nxt[0], cur[1]-nxt[1]))
                     if dL <= self.ON_WAY_DELTA:
+                        # 混合门控: 只允许"贴着覆盖环走廊"的任务顺路清除, 其余留待末端巡回
+                        gate = getattr(Problem3Robot, "ONWAY_RING_GATE", None)
+                        if gate is not None and abs(math.hypot(Q[0], Q[1]) - HEX_R) > gate:
+                            continue
                         # 模块O: 即将停靠前预选机会频道(先清除、后顺带观测)
                         sel = self._opp_select(Q[0], Q[1]) if self.OPP_MEASURE else []
                         ok, res = c.clear(Q[0], Q[1], c2)

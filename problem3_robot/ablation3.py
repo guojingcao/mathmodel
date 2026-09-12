@@ -350,6 +350,70 @@ def order_consistency_test(n=60, seed=4242):
     return same_ab and same_ac
 
 
+def run_ring_gate(gate, delta=300.0, n=400, seed=2026):
+    """混合门控单臂: gate=None 为正式版; 数值=仅当 |‖T‖-HEX_R|<=gate 才顺路清除。"""
+    cfg = frozen3(ONWAY_RING_GATE=gate, ON_WAY_DELTA=delta, OPP_MEASURE=False,
+                  SUPP_REUSE=False)
+    rows = []
+    scope = config_scope((rb.Problem3Robot, cfg))
+    scope.__enter__()
+    try:
+        for k in range(n):
+            env = case_env(seed, k, directional=False)
+            cli = SimClient(env); robot = rb.Problem3Robot(cli)
+            with contextlib.redirect_stdout(io.StringIO()):
+                n_ret = robot.run()
+            chk = check_clearance(n_ret, cli, env)
+            ph = getattr(cli, "ph", {})
+            rows.append(dict(
+                cr=chk["src_clear_ratio"], miss=1-chk["case_full_clear"],
+                full=chk["case_full_clear"], consistent=chk["consistent"],
+                n_src=chk["n_src"], scene=scene_hash(env), T=sim_time(cli),
+                dist=cli.dist, meas=cli.n_measure, fail=cli.fail,
+                onway_t=phase_time(cli, "on_way"),
+                queue_t=phase_time(cli, "queue_clear"),
+                onway_n=len([d for d in getattr(cli, "clear_diag", [])
+                             if str(d.get("src", "")).startswith("on_way")]),
+                pending=len(getattr(cli, "reuse_diag", []))))
+    finally:
+        scope.__exit__(None, None, None)
+    return rows
+
+
+def paired_ring_gate(n=400, seed=2026):
+    """混合门控配对实验: 正式版(无门控) vs 门控 g ∈ {200,400} × δ ∈ {300,800}。"""
+    arms = [("G0 正式版(无门控, δ300)", None, 300.0),
+            ("G200 (δ300)", 200.0, 300.0),
+            ("G400 (δ300)", 400.0, 300.0),
+            ("G200 + δ800", 200.0, 800.0),
+            ("G400 + δ800", 400.0, 800.0)]
+    res = {}
+    for name, gate, delta in arms:
+        t0 = time.time()
+        res[name] = run_ring_gate(gate, delta, n, seed)
+        print(f"  已跑 {name}  [{time.time()-t0:.0f}s]", flush=True)
+    base = res[arms[0][0]]
+    print(f"\n[混合门控配对实验] n={n} 案例/档, 同 seed 同场景(逐案例真配对); 计时=simlib.sim_time")
+    print("硬约束: 任何档出现漏清或互核不一致即否决")
+    print("%-22s%8s%6s%9s%10s%15s%9s%9s%9s%9s" % (
+        "配置", "全清率", "漏清", "平均(s)", "vs正式版", "95%CI", "变快比例",
+        "移动(km)", "顺路次数", "队列(s)"))
+    for name, _g, _d in arms:
+        rows = res[name]
+        T = [r["T"] for r in rows]
+        p = _paired(T, [r["T"] for r in base])
+        print("%-22s%7.1f%%%6d%9.0f%+10.1f%15s%8.1f%%%9.1f%9.1f%9.0f" % (
+            name, 100*np.mean([r["cr"] for r in rows]),
+            sum(r["miss"] for r in rows), np.mean(T), p["mean"],
+            f"[{p['lo']:.0f},{p['hi']:.0f}]", 100*p["win"],
+            np.mean([r["dist"] for r in rows])/1000.0,
+            np.mean([r["onway_n"] for r in rows]),
+            np.mean([r["queue_t"] for r in rows])))
+    bad = [nm for nm, _g, _d in arms if any(r["miss"] for r in res[nm])]
+    print("否决检查: " + ("无漏清" if not bad else f"**有漏清: {bad}**"))
+    return res
+
+
 def _main():
     if len(sys.argv) > 1 and sys.argv[1] == "--order-test":
         ok = order_consistency_test(int(sys.argv[2]) if len(sys.argv) > 2 else 60)
@@ -365,6 +429,9 @@ def _main():
     if len(sys.argv) > 1 and sys.argv[1] == "--ls-gate":
         N = int(sys.argv[2]) if len(sys.argv) > 2 else 300
         paired_ls_gate(N)
+        sys.exit(0)
+    if len(sys.argv) > 1 and sys.argv[1] == "--ring-gate":
+        paired_ring_gate(int(sys.argv[2]) if len(sys.argv) > 2 else 400)
         sys.exit(0)
     N = int(sys.argv[1]) if len(sys.argv) > 1 else 300
     cfgs = [
