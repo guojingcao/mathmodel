@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """共享离线实验库 (problem3_robot / problem4_robot 共用)
 
 解决的问题(来自审查):
@@ -75,7 +75,7 @@ FROZEN4_CLS = {"USE_NEG_INFO": False, "USE_PSO": False, "DO_VERIFY": False,
                                   (-1167.6, -1372.5), (1768.7, -342.5)]}
 # 冻结网格 = robot4 模块级当前默认(θ20 + 平移), 与实机默认保持一致;
 # 旧网格 900/800/θ0 只作为消融对照臂, 不再作为"冻结"值。
-FROZEN4_MOD = {"ON_WAY_DELTA": 300.0, "MESH_A": 920.0, "MESH_MARGIN": 700.0,
+FROZEN4_MOD = {"ON_WAY_DELTA": 300.0, "MESH_A": 970.0, "MESH_MARGIN": 700.0,
                "MESH_THETA": 20.0, "MESH_OFFSET": (460.0, 398.0)}
 
 

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 问题4 机器人程序 —— 全向 + 定向干扰源的自动定位与清除
 
@@ -30,8 +30,8 @@ R_CLEAR = 20.0
 R_NEAR = 5.0
 R_GUARANTEE = 1000.0     # 有效接收半径下限(1000m 内必可收到, 三角证书用)
 N_CH = 20
-MESH_A = 920.0           # 三角网格边长(<=1000 保证接收; 实测 920 最优)
-MESH_MARGIN = 700.0      # 网格向圆外延伸量(实测 700 起才 100% 覆盖圆盘)
+MESH_A = 970.0           # 三角网格边长(<=1000 保证接收; 实测 920 最优)
+MESH_MARGIN = 700.0   # 仅在无 MESH_PTS_OVERRIDE 时使用      # 网格向圆外延伸量(实测 700 起才 100% 覆盖圆盘)
 # 以下两项经配对实验选定(3 seed × 2 定向比例, n=400/臂, 全部显著 -920~-1059 s = -8.8~-9.9%):
 #   27 点 / 37 三角形 / 最大边 920 m / 空洞 0.000%(8000 点) / 定向可发现率 100%(4000 点)
 #   固定巡回 27659 -> 24528 m; 检测/例 -66~-75; P90 全面改善; 全清率 100% 不变
@@ -531,6 +531,18 @@ class Problem4Robot:
     #   (旧 31 点方案 24 319/5 + 3 100 = 7 964 s) -> −440 s
     # 置 None 即回退到 tri_mesh + MESH_EXTRA_PTS 路径。
     MESH_DESIGN_PTS = [
+        (-1548.505, -1171.594), (-1810.648, -283.272), (-1838.208, 435.093),
+        (-1366.795, 1254.801), (-772.343, -1714.099), (-1053.633, -848.967),
+        (-1037.264, -32.657), (-1060.406, 883.632), (-911.526, 1613.717),
+        (66.165, -1861.716), (-357.775, -1391.629), (-463.223, -474.349),
+        (-250.053, 450.618), (-258.892, 1388.985), (-296.147, 1808.476),
+        (516.348, -1777.483), (406.711, -877.507), (333.103, -6.504),
+        (401.193, 927.350), (568.695, 1815.845), (1146.574, -1440.378),
+        (1090.117, -492.846), (1175.054, 419.428), (1221.611, 1377.741),
+        (1797.953, -738.632), (1837.899, -122.731), (1730.516, 805.452),
+    ]
+    # 旧设计(格点块, 27 点): 保留作回退对照; 若需回退把下面两行换成它并把 MESH_A 改为 920
+    MESH_DESIGN_PTS_V1_LATTICE = [
         (-1904.249, -1365.0), (-1904.249, -455.0), (-1904.249, 455.0),
         (-1904.249, 1365.0), (-1116.166, -1820.0), (-1116.166, -910.0),
         (-1116.166, 0.0), (-1116.166, 910.0), (-1116.166, 1820.0),
@@ -1531,7 +1543,25 @@ def main(argv=None):
                          "配合 --mesh 可复现旧网格(如实机 A/B 的旧臂)")
     ap.add_argument("--no-mec-freeze", dest="no_mec_freeze", action="store_true",
                     help="关闭 MEC 就绪冻结(仅用于 A/B 对照; 默认开启)")
+    ap.add_argument("--mesh-pts", dest="mesh_pts", default=None,
+                    help="从文件载入站集坐标(每行 x,y), 用于在环验证优化候选; 默认不载入")
+    ap.add_argument("--mesh-a", dest="mesh_a", type=float, default=None,
+                    help="临时覆盖 MESH_A(邻接容差 1.03*MESH_A); 默认不覆盖")
     args = ap.parse_args(argv)
+
+    if args.mesh_a is not None:
+        MESH_A = args.mesh_a
+        print(f"[config] MESH_A={MESH_A} (临时覆盖)", flush=True)
+    if args.mesh_pts:
+        pts = []
+        for ln in open(args.mesh_pts, encoding="utf-8"):
+            ln = ln.strip()
+            if ln:
+                x, y = ln.split(",")
+                pts.append((float(x), float(y)))
+        Problem4Robot.MESH_PTS_OVERRIDE = pts
+        Problem4Robot.MESH_EXTRA_PTS = []
+        print(f"[config] MESH_PTS_OVERRIDE 载入 {len(pts)} 点自 {args.mesh_pts}", flush=True)
 
     if args.no_mec_freeze:
         Problem4Robot.MEC_FREEZE = False
