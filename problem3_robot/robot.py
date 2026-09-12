@@ -192,6 +192,7 @@ class SimClient:
             "movement_distance_m": round(moves, 1),
             "phase_stats": phases,                      # 分阶段移动距离/动作数/虚拟时间
             "supp_task_count": getattr(self, "aux_need", None),   # 基础扫描后需补测频道数(可观测)
+            "supp_group_merged": getattr(self, "supp_group_merged", None),  # 模块G 合并掉的停靠点数
             "aux_fired": getattr(self, "aux_fired", None),        # 辅助观测是否触发
             "aux_resolved": getattr(self, "aux_resolved", None),  # 辅助观测消除的补测任务数
             "locate_stats": self._locate_stats(),       # 定位方式与 Ω 半径统计
@@ -518,6 +519,11 @@ class Problem3Robot:
     #   保证由基础环独立承担, 辅助点不参与覆盖/排除判据。
     AUX_PTS = None
     AUX_TRIGGER_K = None
+    # 模块B(实验, 默认关): 鲁棒透镜补测点 —— 候选点极小极大楔形交最坏直径择优;
+    #   LENS_TRAVEL_W=None 时按"先几何后路程"(字典序), 设为 λ 时按 最坏直径 + λ·路程。
+    LENS_TRAVEL_W = None
+    # 模块G(实验, 默认关): 补测阶段分组 —— 相距 <= SUPP_GROUP_R 的补测点合并为同一停靠点
+    SUPP_GROUP_R = None
     # ===== 外部改进模块开关(默认关, 用于消融实验) =====
     ORDER_BY_PROB = False    # 模块A: 贝叶斯概率图给覆盖点排访问顺序(替代固定六边形顺序)
     DOP_PRESCREEN = False    # 模块B: DOP(交会角)预筛候选补测点, 再按极小极大+路程择优
@@ -660,6 +666,9 @@ class Problem3Robot:
         if not cands:
             return None
         # 2) 极小极大: 用两站楔形交的最坏直径评价(离散源距离)
+        #    LENS_TRAVEL_W(实验): None = 字典序(先几何后路程, 等价于路程权重无穷大);
+        #    设为 λ 则 key = 最坏直径 + λ·路程(米), 用于消除"为几何改善多跑很远"的代价。
+        lam = getattr(Problem3Robot, "LENS_TRAVEL_W", None)
         best, best_key = None, (float("inf"), float("inf"))
         for q in cands:
             worst = 0.0
@@ -670,7 +679,8 @@ class Problem3Robot:
                 if len(v) >= 2:
                     worst = max(worst, max(math.hypot(p1[0]-p2[0], p1[1]-p2[1])
                                            for p1 in v for p2 in v))
-            key = (worst, math.hypot(q[0]-toward[0], q[1]-toward[1]))
+            dist = math.hypot(q[0]-toward[0], q[1]-toward[1])
+            key = ((worst + lam*dist), 0.0) if lam is not None else (worst, dist)
             if key < best_key:
                 best_key, best = key, q
         return best
@@ -791,6 +801,7 @@ class Problem3Robot:
         self.aux_need = len(supp_tasks)
         self.aux_fired = False
         self.aux_resolved = 0
+        self.supp_group_merged = 0
         aux = getattr(Problem3Robot, "AUX_PTS", None)
         if aux:
             k = getattr(Problem3Robot, "AUX_TRIGGER_K", None)
@@ -836,6 +847,7 @@ class Problem3Robot:
 
         if supp_tasks:
             self.log(f"补测任务 {len(supp_tasks)} 个, 开放路径优化")
+            supp_tasks = self._group_supp_tasks(supp_tasks)      # 模块G(默认关)
             self._phase("supplement")
             if self.SUPP_REUSE:
                 # 模块R(仅实验): 补测点复用 —— 在已必须访问的补测点上顺带观测其他待补测频道,
@@ -1000,6 +1012,43 @@ class Problem3Robot:
                      f"示向数={rec['n_dirs']}"
                      + ("  [门限拦截->改走补测]" if rec.get("gate_blocked") else ""))
         return pt
+
+    # ---- 模块G(实验, 默认关): 补测阶段"分组路线" ----
+    #   把相距 <= SUPP_GROUP_R 的补测点单链聚类合并为一个停靠点(取该类质心), 使补测巡回少走回头路。
+    #   注意: **每个频道仍各自测量一次**(不做"顺带观测"), 信息来源与逐频道规则一致;
+    #         合并只改变"从哪里测", 不改变"测几次、测哪些频道"。
+    def _group_supp_tasks(self, tasks):
+        if not tasks or not self.SUPP_GROUP_R:
+            return tasks
+        R = float(self.SUPP_GROUP_R)
+        pts = [(x, y) for _, x, y in tasks]
+        n = len(pts)
+        parent = list(range(n))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+        for i in range(n):
+            for j in range(i+1, n):
+                if math.hypot(pts[i][0]-pts[j][0], pts[i][1]-pts[j][1]) <= R:
+                    ri, rj = find(i), find(j)
+                    if ri != rj:
+                        parent[ri] = rj
+        groups = {}
+        for i in range(n):
+            groups.setdefault(find(i), []).append(i)
+        out = []
+        for idxs in groups.values():
+            cx = sum(pts[i][0] for i in idxs)/len(idxs)
+            cy = sum(pts[i][1] for i in idxs)/len(idxs)
+            for i in idxs:
+                out.append((tasks[i][0], cx, cy))
+        self.supp_group_merged = n - len(groups)
+        self.log(f"补测分组: {n} 个补测点 -> {len(groups)} 个合并点"
+                 f"(合并半径 {R:.0f} m), 省 {self.supp_group_merged} 个停靠点")
+        return out
 
     # ---- 垂直补测点(取靠近 toward 的一侧) ----
     def _supplement_point(self, ch, toward):
