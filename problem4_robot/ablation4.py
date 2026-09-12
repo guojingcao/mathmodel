@@ -269,17 +269,55 @@ def paired_supp_cap(n=400, seed=3026):
     return res
 
 
-def run_mesh(mesh, n=400, seed=3026, ratios=(0.5, 1.0)):
-    """网格几何消融: mesh = (a, margin, theta, offx, offy) 或 None(=冻结默认)。
+def _in_tri(p, a, b, c):
+    def cr(o, u, v):
+        return (u[0]-o[0])*(v[1]-o[1]) - (u[1]-o[1])*(v[0]-o[0])
+    d1 = cr(a, b, p); d2 = cr(b, c, p); d3 = cr(c, a, p)
+    return not (((d1 < 0) or (d2 < 0) or (d3 < 0)) and ((d1 > 0) or (d2 > 0) or (d3 > 0)))
 
-    同一批场景(按案例编号派生)下跑一种网格, 逐案例记录时间/移动/检测/清除与证书状态。
+
+def _cover_holes(pts, tris, n=20000, seed=13):
+    """圆盘覆盖性检验(均匀 + 边界环加权): 返回 {区域: (漏点数, 漏点%, 最远漏点半径)}。
+
+    证书推理的前提是"圆盘内每点都落在某个三角形内", 故必须对**最外环**加密采样
+    (均匀采样会漏掉集中在 R 内侧的薄空洞, 这正是此前 27 点网格隐藏缺陷的原因)。
     """
-    if mesh is None:
-        r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = 900.0, 800.0, 0.0, (0.0, 0.0)
-    else:
+    rng = np.random.default_rng(seed)
+    out = {}
+    for tag, lo in (("均匀", None), ("环1700-1800", 1700.0), ("环1780-1800", 1780.0)):
+        bad = 0
+        worst = 0.0
+        for _ in range(n):
+            r = (r4.R_AREA*np.sqrt(rng.uniform()) if lo is None
+                 else rng.uniform(lo, r4.R_AREA))
+            a = rng.uniform(0.0, 2*np.pi)
+            p = (r*np.cos(a), r*np.sin(a))
+            if not any(_in_tri(p, pts[t[0]], pts[t[1]], pts[t[2]]) for t in tris):
+                bad += 1
+                worst = max(worst, r)
+        out[tag] = (bad, 100.0*bad/n, worst)
+    return out
+
+
+def run_mesh(mesh, n=400, seed=3026, ratios=(0.5, 1.0), extra=None, cover=True):
+    """网格几何消融: mesh = (a, margin, theta, offx, offy); extra = 覆盖补齐点。
+
+    mesh=None -> 用模块当前默认; extra=None -> 用类当前默认(即冻结值)。
+    本函数显式设置并恢复 MESH_EXTRA_PTS, 否则两臂会串味(都带上补齐点)。
+    """
+    old_extra = getattr(r4.Problem4Robot, "MESH_EXTRA_PTS", None)
+    old_mesh = (r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET)
+    if mesh is not None:
         a, mg, th, ox, oy = mesh
         r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = a, mg, th, (ox, oy)
-    out = {}
+    if extra is not None:
+        r4.Problem4Robot.MESH_EXTRA_PTS = [tuple(p) for p in extra]
+    out = {"cover": None}
+    if cover:
+        rb0 = r4.Problem4Robot(None)
+        out["cover"] = _cover_holes(rb0.pts, rb0.tris)
+        out["n_pts"] = len(rb0.pts)
+        out["n_tris"] = len(rb0.tris)
     for pd in ratios:
         rows = []
         for ci in range(n):
@@ -296,41 +334,57 @@ def run_mesh(mesh, n=400, seed=3026, ratios=(0.5, 1.0)):
                              n_pts=len(rb.pts), n_tris=len(rb.tris),
                              cert_ok=bool(getattr(rb, "mesh_stats", None) is not None)))
         out[pd] = rows
+    # 恢复, 避免臂间串味
+    r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = old_mesh
+    r4.Problem4Robot.MESH_EXTRA_PTS = old_extra
     return out
 
 
-def paired_mesh(n=400, seed=3026,
-                cand=(920.0, 700.0, 20.0, 460.0, 398.0)):
-    """网格几何配对实验: 冻结网格 vs 候选网格(旋转+平移), 硬约束=全清率100%。"""
-    arms = [("冻结 900/800/θ0/off0", None), (f"候选 {cand[0]:.0f}/{cand[1]:.0f}/"
-                                          f"θ{cand[2]:.0f}/off({cand[3]:.0f},{cand[4]:.0f})", cand)]
+def paired_mesh(n=400, seed=3026, cand=None):
+    """网格配对实验(最终版): 旧默认 31 点网格 vs 现默认 29 点网格(含 2 个覆盖补齐点)。
+
+    两臂都显式给定 (网格参数, 补齐点), 因此臂间完全隔离; 场景按案例编号派生 -> 逐例真配对。
+    硬约束: 全清率必须 100%(否则该臂直接否决)。
+    """
+    arms = [("旧默认 900/800/θ0 (31点)", (900.0, 800.0, 0.0, 0.0, 0.0), []),
+            ("现默认 920/700/θ20 +2点 (29点)", None,
+             getattr(r4.Problem4Robot, "MESH_EXTRA_PTS", None))]
     res = {}
-    for name, mesh in arms:
+    for name, mesh, extra in arms:
         t0 = time.time()
-        res[name] = run_mesh(mesh, n, seed)
+        res[name] = run_mesh(mesh, n, seed, extra=extra)
         print(f"  已跑 {name}  [{time.time()-t0:.0f}s]", flush=True)
     base = res[arms[0][0]]
-    print(f"\n[网格几何配对] n={n}/臂/定向比例, 同场景(按案例编号派生)")
+    print(f"\n[网格配对] n={n}/臂/定向比例, 同场景(按案例编号派生), 计时=simlib.sim_time")
+    for name, _, _ in arms:
+        r0 = res[name]
+        cov = r0["cover"]
+        print(f"  {name}: {r0['n_pts']} 点 / {r0['n_tris']} 三角; 覆盖空洞 "
+              + ", ".join(f"{k} {v[1]:.4f}%(漏点最远 r={v[2]:.1f})" for k, v in cov.items()))
     for pd in (0.5, 1.0):
         print(f"\n=== 定向比例 {pd*100:.0f}% ===")
-        print("%-34s%8s%6s%9s%10s%13s%9s%9s%9s" % (
+        print("%-34s%8s%6s%9s%10s%16s%9s%9s%9s" % (
             "网格", "全清率", "漏清", "平均(s)", "Δ时间(s)", "Δ95%CI", "P90(s)",
             "最大(s)", "检测/例"))
-        for name, _ in arms:
+        for name, _, _ in arms:
             rows = res[name][pd]
             T = np.array([r["T"] for r in rows])
             p = _pair_stat(T, np.array([r["T"] for r in base[pd]]))
-            print("%-34s%7.1f%%%6d%9.0f%+10.1f%13s%9.0f%9.0f%9.1f" % (
+            print("%-34s%7.1f%%%6d%9.0f%+10.1f%16s%9.0f%9.0f%9.1f" % (
                 name, np.mean([r["cr"] for r in rows])*100,
                 sum(r["miss"] for r in rows), T.mean(), p[0],
                 f"[{p[2][0]:.0f},{p[2][1]:.0f}]", np.percentile(T, 90), T.max(),
                 np.mean([r["meas"] for r in rows])))
+        # 逐例配对: 候选相对基线的胜负与百分比
+        new = res[arms[1][0]][pd]
+        d = np.array([x["T"]-y["T"] for x, y in zip(new, base[pd])])
+        b = np.array([y["T"] for y in base[pd]])
+        print(f"  逐例配对: 新网格快 {int((d<0).sum())}/{len(d)} 例; "
+              f"平均 Δ={d.mean():+.0f} s ({100*d.mean()/b.mean():+.1f}%); "
+              f"中位 Δ={np.median(d):+.0f} s")
         print("  移动: " + "  ".join(
-            f"{name.split()[0]} {np.mean([r['dist'] for r in res[name][pd]]):.0f}m" for name, _ in arms))
-        print("  网格: " + "  ".join(
-            f"{name.split()[0]} {res[name][pd][0]['n_pts']}点/{res[name][pd][0]['n_tris']}三角"
-            for name, _ in arms))
-    r4.MESH_A, r4.MESH_MARGIN, r4.MESH_THETA, r4.MESH_OFFSET = 900.0, 800.0, 0.0, (0.0, 0.0)
+            f"{name.split()[0]} {np.mean([r['dist'] for r in res[name][pd]]):.0f}m"
+            for name, _, _ in arms))
     return res
 
 
