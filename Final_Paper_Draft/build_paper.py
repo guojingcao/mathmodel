@@ -29,7 +29,7 @@ def set_east_asia(run, font_name: str) -> None:
 
 
 def set_cell_shading(cell, fill: str) -> None:
-    tc_pr = cell._tclkup() if False else cell._tc.get_or_add_tcPr()
+    tc_pr = cell._tc.get_or_add_tcPr()
     shd = tc_pr.find(qn("w:shd"))
     if shd is None:
         shd = OxmlElement("w:shd")
@@ -110,7 +110,6 @@ def configure_styles(doc: Document) -> None:
         style.font.color.rgb = RGBColor(0, 0, 0)
         style._element.rPr.rFonts.set(qn("w:eastAsia"), font)
         style.paragraph_format.space_before = Pt(before)
-        style.paragraphStephanie = None if False else style.paragraph_format
         style.paragraph_format.space_after = Pt(after)
         style.paragraph_format.keep_with_next = True
         style.paragraph_format.keep_together = True

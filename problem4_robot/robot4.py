@@ -543,6 +543,19 @@ class Problem4Robot:
     MESH_PTS_OVERRIDE = MESH_DESIGN_PTS
     # 覆盖补齐点: 被 MESH_PTS_OVERRIDE 取代(保留供回退路径使用)
     MESH_EXTRA_PTS = []
+    # ---- #2 证书核(提前停止测量): 已实现并**实测否决**(默认关)。
+    #      27 点最小覆盖设计太紧: 贪心集合覆盖得到的"能覆盖圆盘的最小子集"= 全部 37 个三角形
+    #      (每个三角形都独立承担覆盖某段边界), 故无提前停止余量; 配 core-first 排序后病理集
+    #      10 类均值 9 869 s vs 关闭时 9 849 s(反而 +0.2%), 低于 0.5% 门槛 -> 维持关闭。
+    #      True 时只对证伪该子集即可排除频道(证书语义不变: 子集同样覆盖圆盘)。
+    CERT_CORE = False
+    # ---- #3 巡回求解器: "2opt" = 2-opt(默认); "or3opt" = 2-opt + Or-opt 段重定位。
+    #      已实现并**实测否决**(默认关): 覆盖巡回 24 120 m 时 Or-opt 找不到任何改进
+    #      (该巡回已近"面积/边长+直径"下界), 清除巡回 n=10~16 时 2-opt 已足够 ->
+    #      病理集 10 类均值差异 +0.2%(默认反而慢), 低于门槛 -> 维持 "2opt"。----
+    TSP_MODE = "2opt"
+    _core_cache = None
+    _core_cache_key = None
 
     def __init__(self, client):
         self.c = client
@@ -566,6 +579,56 @@ class Problem4Robot:
                 tuple(p) for p in getattr(Problem4Robot, "MESH_EXTRA_PTS", []) or []]
         self.tris = build_triangles(self.pts, a=MESH_A)
         self.cover_tris = covering_triangles(self.tris, self.pts)
+        # #2: 证书集合 = 能覆盖圆盘的**最小三角形子集**(若开启), 否则全部覆盖三角形
+        if getattr(Problem4Robot, "CERT_CORE", False):
+            key = tuple(self.pts)
+            if Problem4Robot._core_cache_key != key:
+                Problem4Robot._core_cache = self._build_cert_core()
+                Problem4Robot._core_cache_key = key
+            self.cert_tris = Problem4Robot._core_cache or self.cover_tris
+        else:
+            self.cert_tris = self.cover_tris
+
+    def _build_cert_core(self):
+        """贪心集合覆盖: 求"并集覆盖圆盘"的最小三角形子集(仅用于提前停止, 不改证书语义)。
+
+        确定性(固定种子 + 固定遍历序), 且按点集缓存(arms 换网格时按点集键失效)。
+        """
+        def in_tri(p, a, b, c):
+            def cr(o, u, v):
+                return (u[0]-o[0])*(v[1]-o[1]) - (u[1]-o[1])*(v[0]-o[0])
+            d1, d2, d3 = cr(a, b, p), cr(b, c, p), cr(c, a, p)
+            return not (((d1 < 0) or (d2 < 0) or (d3 < 0)) and
+                        ((d1 > 0) or (d2 > 0) or (d3 > 0)))
+        # 确定性黄金角螺旋采样(不依赖 RNG, 保证证书核可复现)
+        ga = math.pi*(3.0 - math.sqrt(5.0))
+        smp = []
+        for i in range(2000):
+            r = R_AREA*math.sqrt((i + 0.5)/2000.0)
+            a2 = i*ga
+            smp.append((r*math.cos(a2), r*math.sin(a2)))
+        for i in range(2000):
+            r = 1600.0 + (R_AREA - 1600.0)*((i + 0.5)/2000.0)
+            a2 = (i*ga*1.7) % (2*math.pi)
+            smp.append((r*math.cos(a2), r*math.sin(a2)))
+        todo = set(range(len(smp)))
+        core = []
+        while todo and len(core) < len(self.cover_tris):
+            best, best_cnt = None, 0
+            for t in self.cover_tris:
+                A, B, C = self.pts[t[0]], self.pts[t[1]], self.pts[t[2]]
+                cnt = 0
+                for i in todo:
+                    if in_tri(smp[i], A, B, C):
+                        cnt += 1
+                if cnt > best_cnt:
+                    best_cnt, best = cnt, t
+            if best is None or best_cnt == 0:
+                break
+            core.append(best)
+            A, B, C = self.pts[best[0]], self.pts[best[1]], self.pts[best[2]]
+            todo = {i for i in todo if not in_tri(smp[i], A, B, C)}
+        return core
 
     def log(self, *a):
         print("[robot4]", *a, flush=True)
@@ -641,6 +704,41 @@ class Problem4Robot:
                         new = dd(path[i-1], path[n])
                     if new < old - 1e-9:
                         path[i:j+1] = path[i:j+1][::-1]; imp = True
+        if getattr(Problem4Robot, "TSP_MODE", "2opt") == "or3opt":
+            # #3 Or-opt: 把长度 1~3 的连续段整段重定位到更省的位置(2-opt 无法做到)
+            improved = True
+            while improved:
+                improved = False
+                for seg in (1, 2, 3):
+                    for i in range(1, n+2-seg):
+                        j = i + seg - 1
+                        if j > n:
+                            continue
+                        seg_pts = path[i:j+1]
+                        post = path[j+1] if j+1 <= n else None
+                        rm = dd(path[i-1], seg_pts[0]) + (dd(seg_pts[-1], post) if post else 0.0)
+                        keep = dd(path[i-1], post) if post else 0.0
+                        g_rm = rm - keep
+                        if g_rm <= 1e-9:
+                            continue
+                        for k in range(0, n+1):
+                            if i-1 <= k <= j:
+                                continue
+                            nxt = path[k+1] if k+1 <= n else None
+                            add = dd(path[k], seg_pts[0]) + (dd(seg_pts[-1], nxt) if nxt else 0.0)
+                            old_e = dd(path[k], nxt) if nxt else 0.0
+                            if add - old_e < g_rm - 1e-9:
+                                newp = path[:]
+                                del newp[i:j+1]
+                                ins = k+1 if k < i else k+1-seg
+                                newp[ins:ins] = seg_pts
+                                path = newp
+                                improved = True
+                                break
+                        if improved:
+                            break
+                    if improved:
+                        break
         return path[1:]
 
     def _order_points(self):
@@ -651,6 +749,26 @@ class Problem4Robot:
         """
         pts = self.pts
         start = (0.0, 0.0)
+        core_idx = set()
+        for t in (getattr(self, "cert_tris", None) or []):
+            core_idx.update(t)
+        if (getattr(Problem4Robot, "CERT_CORE", False) and core_idx
+                and len(core_idx) < len(pts)):
+            # #2: 证书核顶点先访问(其三角形已覆盖圆盘 => 无源频道可提前证伪、提前停止测量),
+            #     两组各自做 NN+2-opt/Or-opt, 拼接后仍是"每点恰好一次"的置换。
+            def nn_order(idx, cur):
+                out = []
+                unv = set(idx)
+                while unv:
+                    k = min(unv, key=lambda i: math.hypot(pts[i][0]-cur[0], pts[i][1]-cur[1]))
+                    out.append(k); cur = pts[k]; unv.discard(k)
+                return out
+            ord_core = nn_order(core_idx, start)
+            seq_core = self._two_opt_tasks([(k, pts[k][0], pts[k][1]) for k in ord_core], start)
+            last = (seq_core[-1][1], seq_core[-1][2]) if seq_core else start
+            ord_rest = nn_order(set(range(len(pts))) - core_idx, last)
+            seq_rest = self._two_opt_tasks([(k, pts[k][0], pts[k][1]) for k in ord_rest], last)
+            return seq_core + seq_rest
         order = []; unv = set(range(len(pts))); cur = start
         while unv:
             k = min(unv, key=lambda i: math.hypot(pts[i][0]-cur[0], pts[i][1]-cur[1]))
@@ -956,7 +1074,7 @@ class Problem4Robot:
                 if self.state[ch] in ("excluded", "cleared"):
                     continue
                 if self.state[ch] is None:
-                    if all(all(v in self.ns_at[ch] for v in t) for t in self.cover_tris):
+                    if all(all(v in self.ns_at[ch] for v in t) for t in self.cert_tris):
                         self.state[ch] = "excluded"
             # 受限顺路清除
             if ON_WAY_DELTA is not None and i + 1 < len(seq):
@@ -1221,7 +1339,7 @@ class Problem4Robot:
                         self.ns_at_pos[ch].append((px, py))
                     if (self.state[ch] is None
                             and all(all(v in self.ns_at[ch] for v in t)
-                                    for t in self.cover_tris)):
+                                    for t in self.cert_tris)):
                         self.state[ch] = "excluded"
                     continue
                 pt = self._locate_quick(ch, tag="恢复")
