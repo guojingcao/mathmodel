@@ -30,7 +30,7 @@ rb = simlib.load_module("rb3", os.path.join(HERE, "robot.py"))
 from verify_ring_supp import FixedEnv                   # noqa: E402
 
 R_AREA, R_GUAR = 1800.0, 1000.0
-N = 9
+N = int(sys.argv[3]) if len(sys.argv) > 3 else 9      # 环点数(第3个参数; 现行部署为 8)
 PHASES = ("coverage", "supplement", "on_way", "queue_clear", "homing",
           "on_way_homing", "queue_homing", "recovery")
 
@@ -106,7 +106,10 @@ def main():
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 8452
     r_bal = 1400.0/math.cos(math.pi/N)
     print(f"n={N} 单环 + 原点; 两端等值的最优半径 r = 1400/cos(pi/{N}) = {r_bal:.1f} m")
-    rs = [1030.0, 1200.0, 1300.0, r_bal, 1600.0, 1800.0*math.cos(math.pi/N)]
+    if len(sys.argv) > 3:            # n 显式给定 -> 扫"向下"(省时间)与适度向上的档位
+        rs = [985.0, 1005.0, 1030.0, 1075.0, 1150.0, 1200.0]
+    else:
+        rs = [1030.0, 1200.0, 1300.0, r_bal, 1600.0, 1800.0*math.cos(math.pi/N)]
     print(f"{'r(m)':>8}{'最坏(闭式)':>11}{'最坏(采样)':>11}{'余量(m)':>9}{'巡回(m)':>9}"
           f"{'T(s)':>8}{'移动':>8}{'检测':>7}{'失败':>6}{'全清':>10}")
     res = {}
