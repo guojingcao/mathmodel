@@ -1297,7 +1297,13 @@ def main(argv=None):
                     help="临时覆盖网格几何 'a,margin,theta,offx,offy'(如实机 A/B; "
                          "旧网格为 '900,800,0,0,0'; 不传则用默认 920,700,20,460,398)")
     ap.add_argument("--mesh-stats", action="store_true", help="只打印网格统计后退出")
+    ap.add_argument("--no-mesh-extra", dest="no_mesh_extra", action="store_true",
+                    help="关闭网格覆盖补齐点(仅用于 A/B 对照; 默认开启, 关闭即退回原网格)")
     args = ap.parse_args(argv)
+
+    if args.no_mesh_extra:
+        Problem4Robot.MESH_EXTRA_PTS = []
+        print("[config] MESH_EXTRA_PTS=[] (A/B 对照: 不含覆盖补齐点)", flush=True)
 
     # 顺路清除阈值: 默认不变; 仅当显式传参时覆盖(用于 δ A/B 风险复核)
     if args.on_way_delta is not None:
@@ -1305,10 +1311,10 @@ def main(argv=None):
     print(f"[config] on_way_delta={ON_WAY_DELTA}", flush=True)
 
     if args.mesh_stats:
-        rb = Problem4Robot.__new__(Problem4Robot)
-        rb.pts = tri_mesh(margin=MESH_MARGIN); rb.tris = build_triangles(rb.pts)
-        rb.cover_tris = covering_triangles(rb.tris, rb.pts)
-        print(f"网格点数={len(rb.pts)} 三角形数={len(rb.tris)} 需证伪={len(rb.cover_tris)}")
+        # 必须走真实构造路径, 否则漏掉 MESH_EXTRA_PTS 与 --mesh 覆盖(曾恒报 27 点)
+        rb = Problem4Robot(None)
+        print(f"网格点数={len(rb.pts)} 三角形数={len(rb.tris)} 需证伪={len(rb.cover_tris)} "
+              f"(含补齐点 {len(getattr(Problem4Robot, 'MESH_EXTRA_PTS', []) or [])} 个)")
         return
 
     if args.mesh:
