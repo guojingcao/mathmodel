@@ -579,6 +579,12 @@ class Problem4Robot:
     #      字典序最小优先。多示向时先拿到的未必最可靠(边界源尤其如此)。默认先保持 acq,
     #      经固定误差场配对实验验证后再决定是否切换。----
     BEARING_ORDER = "acq"
+    # ---- 邻域试探模式(归航点失败后的兜底): "rings"=8/15 m 两圈各 6 点(原行为);
+    #      "normal2"=沿示向法线两侧各 1 点(偏移取横向误差上界 d̂·sin1°, 限幅 6~26 m);
+    #      "none"=不做邻域, 直接换下一条示向。NORMAL2_STOP=True 时"两侧2点"失败即结束本次归航。
+    #      依据: 12 局在环日志中 21 次失败里 16 次来自 12 点圆周试探(76.2%)。----
+    NEIGHBOR_MODE = "rings"
+    NORMAL2_STOP = False
     _core_cache = None
     _core_cache_key = None
 
@@ -1037,6 +1043,28 @@ class Problem4Robot:
             if okc and rc == "success":
                 self.state[ch] = "cleared"; self.cleared_count += 1
                 return done("归航点" if bi == 0 else "后续示向", bi)
+            # 邻域试探: 三种模式(四臂比较用)
+            mode = getattr(Problem4Robot, "NEIGHBOR_MODE", "rings")
+            if mode == "none":
+                continue                     # 不试邻域, 立即换下一条示向
+            if mode == "normal2":
+                # 角度误差的主要分量是"横向"而非各向同性: 沿示向法线两侧各试一点,
+                # 偏移量取横向误差上界 d̂·sin1°(限幅 6~26 m; 最远 1500 m 时约 26.2 m)
+                ux, uy = math.cos(th*DEG), math.sin(th*DEG)
+                nx, ny = -uy, ux
+                dhat = math.hypot(bt[0]-P[0], bt[1]-P[1])
+                off = min(26.0, max(6.0, dhat*math.sin(BEARING_ERR_DEG*DEG)))
+                for sgn in (1.0, -1.0):
+                    q = (bt[0] + sgn*off*nx, bt[1] + sgn*off*ny)
+                    ok2, rc2 = self.c.clear(q[0], q[1], ch)
+                    self._note_clear(ch, q[0], q[1], f"{src}|法线{off:.0f}m", omega_r,
+                                     cross_ang, rc2 if ok2 else "rejected")
+                    if ok2 and rc2 == "success":
+                        self.state[ch] = "cleared"; self.cleared_count += 1
+                        return done(f"法线{off:.0f}m", bi)
+                if getattr(Problem4Robot, "NORMAL2_STOP", False):
+                    break                    # 两侧2点失败即结束本次归航(留待后续恢复链)
+                continue                     # 否则换下一条示向
             for rad in self.NEIGHBOR_RINGS:
                 for k in range(6):
                     a = k * 60 * DEG
