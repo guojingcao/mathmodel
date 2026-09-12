@@ -7,15 +7,18 @@ param(
   [double]$RingR = 1150.0,
   [int]$RingN = 9,
   [string]$TeamNo = $env:ROBOT_ID,
-  [int]$StartAt = 1
+  [int]$StartAt = 1,
+  [switch]$NoLens
 )
 $env:PYTHONIOENCODING = "utf-8"
 if (-not $TeamNo) { $TeamNo = "202604004013" }
+$extra = @()
+if ($NoLens) { $extra += "--no-lens" }
 $ok = 0; $fail = 0
 for ($i = $StartAt; $i -lt ($StartAt + $Count); $i++) {
   $t = "{0}_{1:d2}" -f $Tag, $i
   $t0 = Get-Date
-  $out = python problem3_robot/robot.py --robot-id $TeamNo --tag $t --ring-r $RingR --ring-n $RingN 2>&1
+  $out = python problem3_robot/robot.py --robot-id $TeamNo --tag $t --ring-r $RingR --ring-n $RingN @extra 2>&1
   $secs = [int]((Get-Date) - $t0).TotalSeconds
   $txt = ($out | Out-String)
   if ($txt -match "not started|connection refused|ERROR|Traceback" -or $txt -match [char]0x6D4B + [char]0x8BD5) {

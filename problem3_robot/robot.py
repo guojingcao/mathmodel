@@ -519,14 +519,22 @@ class Problem3Robot:
     #   保证由基础环独立承担, 辅助点不参与覆盖/排除判据。
     AUX_PTS = None
     AUX_TRIGGER_K = None
-    # 模块B(实验, 默认关): 鲁棒透镜补测点 —— 候选点极小极大楔形交最坏直径择优;
-    #   LENS_TRAVEL_W=None 时按"先几何后路程"(字典序), 设为 λ 时按 最坏直径 + λ·路程。
-    LENS_TRAVEL_W = None
+    # 模块B(已采纳): 鲁棒透镜补测点 —— 候选点极小极大楔形交最坏直径择优;
+    #   LENS_TRAVEL_W=None 时按"先几何后路程"(字典序, 实测在标准混合上变慢 +1.71 %, 不采用);
+    #   现在取加权 λ=0.05: key = 最坏直径 + 0.05·路程。实测(配对 1000 例, 固定误差场):
+    #     旧冻结环 1200x6 标准混合 -1.0 s(-0.02 %, CI 含 0, 时间中性);
+    #     候选环 1150x9 -6.5 s(-0.15 %, CI [-10,-3]);
+    #     困难几何(贴边界/最坏接收 400 例) -327.3 s(-5.65 %, CI [-373,-281], 75 % 更快);
+    #     清除失败 -18 %(贴边界类 1.62 -> 0.72), 归航 -91 %, 检测 -2.8 次/例。
+    #   λ∈{0.02,0.05,0.10,0.20} 结果完全相同(候选仅 18 点), 故 λ 不是需调参的自由度。
+    DOP_PRESCREEN = True
+    LENS_TRAVEL_W = 0.05
     # 模块G(实验, 默认关): 补测阶段分组 —— 相距 <= SUPP_GROUP_R 的补测点合并为同一停靠点
+    #   经配对实验否决: R=300 无效果(+1.3 s), R=600 +33.4 s, R=1000 +134.2 s
     SUPP_GROUP_R = None
     # ===== 外部改进模块开关(默认关, 用于消融实验) =====
     ORDER_BY_PROB = False    # 模块A: 贝叶斯概率图给覆盖点排访问顺序(替代固定六边形顺序)
-    DOP_PRESCREEN = False    # 模块B: DOP(交会角)预筛候选补测点, 再按极小极大+路程择优
+    # (模块B 的开关 DOP_PRESCREEN/LENS_TRAVEL_W 见上方"已采纳"处, 此处不再重复定义以免覆盖)
     # 模块E(诊断用配对实验开关): 最小二乘试探清除的信任门限(Ω 半径, 米)。
     #   None = 当前策略: Ω 半径超限或可行域退化时, 直接用 LS 交会点盲清除;
     #   数值 = 仅当 Ω 半径 <= 该值才允许盲清除, 否则改走补测/归航(用于配对实验)。
@@ -1716,6 +1724,10 @@ def main(argv=None):
                         help="本地行为日志输出路径(默认 robot_log_<时间戳>.jsonl)")
     parser.add_argument("--tag", dest="tag", default=os.environ.get("LOG_TAG", ""),
                         help="日志文件名后缀标记(也可用环境变量 LOG_TAG)")
+    parser.add_argument("--no-lens", action="store_true",
+                        help="关闭鲁棒透镜补测点(回到固定垂直偏移) —— 仅用于在环 A/B")
+    parser.add_argument("--lens-lam", dest="lens_lam", type=float, default=None,
+                        help="鲁棒透镜判据的路程权重 λ(缺省 = 采纳值 0.05)")
     parser.add_argument("--ring-r", dest="ring_r", type=float, default=None,
                         help="覆盖环半径(米); 缺省 = 采纳配置 1150.0; 回退对照用 1200.0")
     parser.add_argument("--ring-n", dest="ring_n", type=int, default=None,
@@ -1748,6 +1760,10 @@ def main(argv=None):
         Problem3Robot.RING_R = args.ring_r
     if args.ring_n is not None:
         Problem3Robot.RING_N = args.ring_n
+    if args.no_lens:
+        Problem3Robot.DOP_PRESCREEN = False
+    if args.lens_lam is not None:
+        Problem3Robot.LENS_TRAVEL_W = args.lens_lam
 
     # 实验开关: 仅在显式传参时生效, 默认保持冻结配置
     if args.opp:
