@@ -1800,6 +1800,32 @@ class Problem3Robot:
                     if new < old - 1e-9:
                         path[i:j+1] = path[i:j+1][::-1]
                         improved = True
+        # ---- 可选(默认关): Or-opt 段移动(长度 1..3), 用于"TSP 微调"实验 ----
+        if getattr(Problem3Robot, "TSP_OROPT", False):
+            def plen(p):
+                return sum(d(p[k], p[k+1]) for k in range(len(p)-1))
+            seg_max = int(getattr(Problem3Robot, "TSP_OROPT_SEG", 3))
+            moved = True
+            while moved:
+                moved = False
+                cur = plen(path)
+                for L in range(1, seg_max+1):
+                    for i in range(1, len(path)-L+1):
+                        seg = path[i:i+L]
+                        rest = path[:i] + path[i+L:]
+                        for k in range(1, len(rest)+1):
+                            if k == i:
+                                continue
+                            cand = rest[:k] + seg + rest[k:]
+                            if plen(cand) < cur - 1e-9:
+                                path = cand
+                                cur = plen(path)
+                                moved = True
+                                break
+                        if moved:
+                            break
+                    if moved:
+                        break
         return path[1:]
 
     # ---- 已发现频道的冗余测量过滤: 当前点交会角有明显改善才值得测 ----
